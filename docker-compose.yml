@@ -1,0 +1,8 @@
+services:
+  messaging:
+    build: .
+    ports:
+      - "4566:4566"
+    environment:
+      PORT: "4566"
+      LOG_LEVEL: "info"

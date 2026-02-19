@@ -4,7 +4,7 @@ This is a Go-based CLI tool.
 
 ## Structure
 
-`module github.com/yarlson/snap`
+`module github.com/yarlson/devstack`
 
 - `cmd/` - CLI commands (Cobra-based)
 - `internal/` - Core business logic
