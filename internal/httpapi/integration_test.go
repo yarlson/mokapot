@@ -16,8 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yarlson/devstack/internal/httpapi"
-	"github.com/yarlson/devstack/internal/sqs"
+	"github.com/yarlson/mokapot/internal/httpapi"
+	"github.com/yarlson/mokapot/internal/sqs"
 )
 
 func newIntegrationSetup(t *testing.T) (*awssqs.Client, *httptest.Server, *sqs.Engine) {

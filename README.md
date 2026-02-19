@@ -1,6 +1,6 @@
-# devstack
+# mokapot
 
-A lightweight, in-memory AWS SQS emulator for local development and testing. Built with Go's standard library, devstack provides a fully-functional SQS mock server that supports both AWS Query API (XML) and AWS JSON 1.0 protocols.
+A lightweight, in-memory AWS SQS emulator for local development and testing. Built with Go's standard library, mokapot provides a fully-functional SQS mock server that supports both AWS Query API (XML) and AWS JSON 1.0 protocols.
 
 - **Local SQS development** without AWS credentials or network access
 - **Full SQS API support** including queues, messages, visibility timeout, long polling, delays, and dead-letter queues
@@ -28,7 +28,7 @@ A lightweight, in-memory AWS SQS emulator for local development and testing. Bui
 go mod download
 
 # Run the server
-go run ./cmd/messagingd/main.go
+go run ./cmd/mokapot/main.go
 ```
 
 ### Using Docker Compose
@@ -40,8 +40,8 @@ docker-compose up
 ### Building a binary
 
 ```bash
-CGO_ENABLED=0 go build -o messagingd ./cmd/messagingd
-./messagingd
+CGO_ENABLED=0 go build -o mokapot ./cmd/mokapot
+./mokapot
 ```
 
 The server listens on port **4566** by default.
@@ -63,7 +63,7 @@ All configuration is via environment variables. All variables are optional with 
 ### Example
 
 ```bash
-PORT=5000 REGION=us-east-1 LOG_LEVEL=debug go run ./cmd/messagingd/main.go
+PORT=5000 REGION=us-east-1 LOG_LEVEL=debug go run ./cmd/mokapot/main.go
 ```
 
 ---
@@ -109,8 +109,8 @@ curl http://localhost:4566/_health
 Build and run the container:
 
 ```bash
-docker build -t devstack .
-docker run -p 4566:4566 devstack
+docker build -t mokapot .
+docker run -p 4566:4566 mokapot
 ```
 
 ### Docker Compose
@@ -152,7 +152,7 @@ The test suite includes:
 
 | Directory           | Purpose                                            |
 | ------------------- | -------------------------------------------------- |
-| `cmd/messagingd/`   | Server entry point, signal handling, configuration |
+| `cmd/mokapot/`      | Server entry point, signal handling, configuration |
 | `internal/httpapi/` | HTTP routing and protocol detection                |
 | `internal/sqs/`     | SQS engine, message lifecycle, queue management    |
 | `internal/query/`   | AWS Query API parser                               |

@@ -1,4 +1,4 @@
-module github.com/yarlson/devstack
+module github.com/yarlson/mokapot
 
 go 1.25.0
 

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yarlson/devstack/internal/sqs"
+	"github.com/yarlson/mokapot/internal/sqs"
 )
 
 func newEngine() *sqs.Engine {

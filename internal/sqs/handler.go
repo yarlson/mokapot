@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yarlson/devstack/internal/query"
+	"github.com/yarlson/mokapot/internal/query"
 )
 
 // Handler dispatches SQS actions to the engine.

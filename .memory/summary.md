@@ -1,4 +1,4 @@
-# devstack — Local AWS SQS/SNS Emulator
+# mokapot — Local AWS SQS/SNS Emulator
 
 ## What
 
@@ -70,7 +70,7 @@ SQS core message lifecycle is operational. SNS is not yet implemented.
 ## Tech Stack
 
 - **Language:** Go 1.25
-- **Module:** `github.com/yarlson/devstack`
+- **Module:** `github.com/yarlson/mokapot`
 - **Testing:** `testify`, `aws-sdk-go-v2` (integration tests)
 - **Linting:** `golangci-lint`
 - **Logging:** `log/slog` with JSON handler

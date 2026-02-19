@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/yarlson/devstack/internal/sqs"
+	"github.com/yarlson/mokapot/internal/sqs"
 )
 
 // NewServer creates an HTTP handler with health, SQS routing, and readiness endpoints.

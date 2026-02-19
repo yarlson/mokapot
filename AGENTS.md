@@ -4,7 +4,7 @@ This is a Go-based CLI tool.
 
 ## Structure
 
-`module github.com/yarlson/devstack`
+`module github.com/yarlson/mokapot`
 
 - `cmd/` - CLI commands (Cobra-based)
 - `internal/` - Core business logic
