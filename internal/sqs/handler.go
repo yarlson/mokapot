@@ -178,7 +178,16 @@ func (h *Handler) sendMessageJSON(w http.ResponseWriter, raw map[string]json.Raw
 		return
 	}
 
-	msg, err := h.engine.SendMessage(queueName, body)
+	delaySeconds := -1 // use queue default
+	if v, ok := jsonInt(raw, "DelaySeconds"); ok {
+		if v < 0 || v > 900 {
+			writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Value for parameter DelaySeconds is invalid. Reason: Must be between 0 and 900.")
+			return
+		}
+		delaySeconds = v
+	}
+
+	msg, err := h.engine.SendMessage(queueName, body, delaySeconds)
 	if err != nil {
 		writeJSONQueueError(w, err)
 		return
@@ -412,7 +421,17 @@ func (h *Handler) sendMessageXML(w http.ResponseWriter, params query.Params, que
 		return
 	}
 
-	msg, err := h.engine.SendMessage(queueName, body)
+	delaySeconds := -1 // use queue default
+	if dsStr := params.Get("DelaySeconds"); dsStr != "" {
+		v, err := strconv.Atoi(dsStr)
+		if err != nil || v < 0 || v > 900 {
+			query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Value for parameter DelaySeconds is invalid. Reason: Must be between 0 and 900.")
+			return
+		}
+		delaySeconds = v
+	}
+
+	msg, err := h.engine.SendMessage(queueName, body, delaySeconds)
 	if err != nil {
 		writeQueueErrorXML(w, err)
 		return

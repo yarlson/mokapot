@@ -203,3 +203,34 @@ func TestXML_Error_ReceiptHandleIsInvalid_Shape(t *testing.T) {
 	assert.Contains(t, body, "<Code>ReceiptHandleIsInvalid</Code>")
 	assert.Contains(t, body, "<RequestId>")
 }
+
+// --- Golden response shape: SendMessage with DelaySeconds ---
+
+func TestXML_SendMessage_WithDelaySeconds_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=delay-shape-queue")
+
+	rec := postQuery(h, "/000000000000/delay-shape-queue", "Action=SendMessage&MessageBody=delayed+body&DelaySeconds=10")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<SendMessageResponse>")
+	assert.Contains(t, body, "<SendMessageResult>")
+	assert.Contains(t, body, "<MessageId>")
+	assert.Contains(t, body, "<MD5OfMessageBody>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_SendMessage_InvalidDelaySeconds_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=bad-delay-queue")
+
+	rec := postQuery(h, "/000000000000/bad-delay-queue", "Action=SendMessage&MessageBody=body&DelaySeconds=1000")
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>InvalidParameterValue</Code>")
+	assert.Contains(t, body, "<RequestId>")
+}

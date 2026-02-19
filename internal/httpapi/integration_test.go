@@ -354,3 +354,115 @@ func TestIntegration_LongPolling_TimesOut(t *testing.T) {
 	assert.Empty(t, recvOut.Messages)
 	assert.GreaterOrEqual(t, elapsed, 900*time.Millisecond, "should wait close to WaitTimeSeconds")
 }
+
+// --- Delayed message tests ---
+
+func TestIntegration_DelayedMessage_NotReceivedBeforeDelay(t *testing.T) {
+	client, ts, engine := newIntegrationSetup(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	now := time.Now()
+	engine.SetClock(func() time.Time { return now })
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("delay-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send with 10-second delay
+	sendOut, err := client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:     queueURL,
+		MessageBody:  aws.String("delayed message"),
+		DelaySeconds: 10,
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, *sendOut.MessageId)
+
+	// Should not be receivable immediately
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvOut.Messages)
+
+	// Advance clock past the delay
+	now = now.Add(11 * time.Second)
+	engine.SetClock(func() time.Time { return now })
+
+	// Now should be receivable
+	recvOut, err = client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	assert.Equal(t, "delayed message", *recvOut.Messages[0].Body)
+	assert.Equal(t, *sendOut.MessageId, *recvOut.Messages[0].MessageId)
+}
+
+func TestIntegration_DelayedMessage_ZeroDelayIsImmediate(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("zero-delay-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send with explicit zero delay
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:     queueURL,
+		MessageBody:  aws.String("immediate"),
+		DelaySeconds: 0,
+	})
+	require.NoError(t, err)
+
+	// Should be receivable immediately
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	assert.Equal(t, "immediate", *recvOut.Messages[0].Body)
+}
+
+func TestIntegration_DelayedMessage_LongPollWakesOnDelayExpiry(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("delay-longpoll-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send with 1 second delay
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:     queueURL,
+		MessageBody:  aws.String("delay-then-poll"),
+		DelaySeconds: 1,
+	})
+	require.NoError(t, err)
+
+	// Long poll with 5s wait — should return after ~1s when delay expires
+	start := time.Now()
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+		WaitTimeSeconds:     5,
+	})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	assert.Equal(t, "delay-then-poll", *recvOut.Messages[0].Body)
+	assert.GreaterOrEqual(t, elapsed, 900*time.Millisecond, "should wait for delay to expire")
+	assert.Less(t, elapsed, 4*time.Second, "should not wait full poll duration")
+}

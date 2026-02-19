@@ -66,7 +66,7 @@ func TestSendAndReceiveMessage(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	msg, err := e.SendMessage("q", "hello world")
+	msg, err := e.SendMessage("q", "hello world", -1)
 	require.NoError(t, err)
 	assert.NotEmpty(t, msg.MessageID)
 	assert.Equal(t, "hello world", msg.Body)
@@ -108,7 +108,7 @@ func TestDeleteMessage(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg1")
+	_, err = e.SendMessage("q", "msg1", -1)
 	require.NoError(t, err)
 
 	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
@@ -137,7 +137,7 @@ func TestDeleteMessageInvalidHandle(t *testing.T) {
 func TestSendToNonExistentQueue(t *testing.T) {
 	e := newEngine()
 
-	_, err := e.SendMessage("nope", "body")
+	_, err := e.SendMessage("nope", "body", -1)
 	assert.ErrorIs(t, err, sqs.ErrQueueDoesNotExist)
 }
 
@@ -149,7 +149,7 @@ func TestReceiveMaxMessages(t *testing.T) {
 	require.NoError(t, err)
 
 	for i := range 5 {
-		_, err = e.SendMessage("q", fmt.Sprintf("msg%d", i))
+		_, err = e.SendMessage("q", fmt.Sprintf("msg%d", i), -1)
 		require.NoError(t, err)
 	}
 
@@ -170,7 +170,7 @@ func TestMessageInvisibleAfterReceive(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg")
+	_, err = e.SendMessage("q", "msg", -1)
 	require.NoError(t, err)
 
 	// Receive with a long visibility timeout
@@ -191,7 +191,7 @@ func TestMessageReappearsAfterVisibilityTimeout(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	sent, err := e.SendMessage("q", "retry-me")
+	sent, err := e.SendMessage("q", "retry-me", -1)
 	require.NoError(t, err)
 
 	// Receive with zero visibility timeout — message becomes available on next call
@@ -222,7 +222,7 @@ func TestOldReceiptHandleInvalidAfterReappearance(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg")
+	_, err = e.SendMessage("q", "msg", -1)
 	require.NoError(t, err)
 
 	// Receive with zero visibility timeout
@@ -252,7 +252,7 @@ func TestMultipleReappearancesIncrementReceiveCount(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "persistent")
+	_, err = e.SendMessage("q", "persistent", -1)
 	require.NoError(t, err)
 
 	// Receive the same message 5 times without deleting
@@ -274,7 +274,7 @@ func TestLongPolling_ReturnsImmediatelyWhenMessagesAvailable(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "already here")
+	_, err = e.SendMessage("q", "already here", -1)
 	require.NoError(t, err)
 
 	// Long polling with WaitTimeSeconds=5, but message already available
@@ -305,7 +305,7 @@ func TestLongPolling_BlocksUntilMessageArrives(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Send a message to wake the waiter
-	_, err = e.SendMessage("q", "arrived later")
+	_, err = e.SendMessage("q", "arrived later", -1)
 	require.NoError(t, err)
 
 	wg.Wait()
@@ -365,7 +365,7 @@ func TestLongPolling_WakesOnVisibilityExpiry(t *testing.T) {
 	require.NoError(t, err)
 
 	// Send a message and receive it with a short visibility timeout
-	_, err = e.SendMessage("q", "will-expire")
+	_, err = e.SendMessage("q", "will-expire", -1)
 	require.NoError(t, err)
 
 	received, err := e.ReceiveMessage(ctx, "q", 1, 1, 0) // 1 second visibility
@@ -415,7 +415,7 @@ func TestLongPolling_MultipleWaitersAllWake(t *testing.T) {
 
 	// Send enough messages for all waiters
 	for i := range numWaiters {
-		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i))
+		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1)
 		require.NoError(t, err)
 	}
 
@@ -431,4 +431,193 @@ func TestLongPolling_MultipleWaitersAllWake(t *testing.T) {
 		totalReceived += len(r)
 	}
 	assert.Equal(t, numWaiters, totalReceived)
+}
+
+// --- Delayed message tests ---
+
+func TestDelayedMessage_NotReceivableBeforeDelay(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Send with 10-second delay
+	_, err = e.SendMessage("q", "delayed", 10)
+	require.NoError(t, err)
+
+	// Try to receive immediately — should be empty
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+
+	// Advance clock to 5 seconds — still delayed
+	now = now.Add(5 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	received, err = e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+}
+
+func TestDelayedMessage_ReceivableAfterDelay(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	sent, err := e.SendMessage("q", "delayed", 10)
+	require.NoError(t, err)
+
+	// Advance clock past the delay
+	now = now.Add(11 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, sent.MessageID, received[0].MessageID)
+	assert.Equal(t, "delayed", received[0].Body)
+}
+
+func TestDelayedMessage_ZeroDelayIsImmediate(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "no-delay", 0)
+	require.NoError(t, err)
+
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "no-delay", received[0].Body)
+}
+
+func TestDelayedMessage_QueueDefaultDelay(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	q, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Set queue-level default delay to 5 seconds
+	q.SetAttribute("DelaySeconds", "5")
+
+	// Send with -1 (use queue default)
+	_, err = e.SendMessage("q", "queue-delayed", -1)
+	require.NoError(t, err)
+
+	// Not receivable immediately
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+
+	// Advance past queue default delay
+	now = now.Add(6 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	received, err = e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "queue-delayed", received[0].Body)
+}
+
+func TestDelayedMessage_PerMessageOverridesQueueDefault(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	q, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Queue default is 60s, but message has 2s delay
+	q.SetAttribute("DelaySeconds", "60")
+
+	_, err = e.SendMessage("q", "short-delay", 2)
+	require.NoError(t, err)
+
+	// Not available at t=0
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+
+	// Available at t=3s (past message-level 2s delay, despite queue-level 60s)
+	now = now.Add(3 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	received, err = e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "short-delay", received[0].Body)
+}
+
+func TestDelayedMessage_MixedDelayedAndImmediate(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Send one delayed and one immediate message
+	_, err = e.SendMessage("q", "delayed-msg", 10)
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "immediate-msg", 0)
+	require.NoError(t, err)
+
+	// Only the immediate message should be receivable
+	received, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "immediate-msg", received[0].Body)
+
+	// Advance past the delay
+	now = now.Add(11 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	received, err = e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "delayed-msg", received[0].Body)
+}
+
+func TestDelayedMessage_LongPollWakesWhenDelayExpires(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Send a delayed message (1 second delay)
+	_, err = e.SendMessage("q", "delayed-poll", 1)
+	require.NoError(t, err)
+
+	// Long poll should wake when the delay expires and return the message
+	ctx := context.Background()
+	start := time.Now()
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 5)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "delayed-poll", received[0].Body)
+	assert.GreaterOrEqual(t, elapsed, 900*time.Millisecond, "should wait for delay to expire")
+	assert.Less(t, elapsed, 4*time.Second, "should not wait full poll duration")
 }

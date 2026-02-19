@@ -21,6 +21,7 @@ type Message struct {
 
 	ReceiptHandle  string
 	InvisibleUntil time.Time
+	AvailableAt    time.Time // zero value means immediately available
 }
 
 // waiter represents a long-polling ReceiveMessage caller waiting for messages.
@@ -30,8 +31,8 @@ type waiter struct {
 
 // Queue represents an in-memory SQS queue.
 //
-// Attributes is immutable after queue creation. Do not modify directly;
-// if SetQueueAttributes is added, it must hold q.mu.
+// Attributes must not be mutated directly after queue creation.
+// Use SetAttribute to modify attributes safely under the queue lock.
 type Queue struct {
 	Name       string
 	URL        string
@@ -43,6 +44,13 @@ type Queue struct {
 	inflight  map[string]*Message // receiptHandle -> message
 	waiters   []*waiter
 	createdAt time.Time
+}
+
+// SetAttribute updates a single queue attribute under the queue lock.
+func (q *Queue) SetAttribute(key, value string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.Attributes[key] = value
 }
 
 // Engine manages all SQS queues in memory.
@@ -128,48 +136,71 @@ func (e *Engine) GetQueueURL(name string) (string, error) {
 // GetQueueVisibilityTimeout returns the default visibility timeout for a queue.
 func (e *Engine) GetQueueVisibilityTimeout(name string) (int, error) {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-
 	q, exists := e.queues[name]
+	e.mu.RUnlock()
+
 	if !exists {
 		return 0, ErrQueueDoesNotExist
 	}
+	q.mu.Lock()
 	vt, _ := strconv.Atoi(q.Attributes["VisibilityTimeout"])
+	q.mu.Unlock()
 	return vt, nil
 }
 
 // GetQueueWaitTimeSeconds returns the default receive wait time for a queue.
 func (e *Engine) GetQueueWaitTimeSeconds(name string) (int, error) {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-
 	q, exists := e.queues[name]
+	e.mu.RUnlock()
+
 	if !exists {
 		return 0, ErrQueueDoesNotExist
 	}
+	q.mu.Lock()
 	wt, _ := strconv.Atoi(q.Attributes["ReceiveMessageWaitTimeSeconds"])
+	q.mu.Unlock()
 	return wt, nil
 }
 
 // SendMessage adds a message to a queue.
+// delaySeconds overrides the queue-level DelaySeconds. Pass -1 to use the queue default.
 //
 // Note: the engine read-lock is released before acquiring the queue lock.
 // If DeleteQueue is added, it must ensure in-flight operations on the queue
 // complete before removing it from the map (e.g. use queue.mu as a barrier).
-func (e *Engine) SendMessage(queueName, body string) (*Message, error) {
+func (e *Engine) SendMessage(queueName, body string, delaySeconds int) (*Message, error) {
 	e.mu.RLock()
 	q, exists := e.queues[queueName]
+	nowFn := e.now
 	e.mu.RUnlock()
 
 	if !exists {
 		return nil, ErrQueueDoesNotExist
 	}
 
+	if delaySeconds > 900 {
+		delaySeconds = 900
+	}
+
+	now := nowFn()
+
+	if delaySeconds < 0 {
+		q.mu.Lock()
+		ds, _ := strconv.Atoi(q.Attributes["DelaySeconds"])
+		q.mu.Unlock()
+		delaySeconds = ds
+	}
+
 	msg := &Message{
 		MessageID:     uuid.New().String(),
 		Body:          body,
 		MD5OfBody:     md5Hash(body),
-		SentTimestamp: e.now().UnixMilli(),
+		SentTimestamp: now.UnixMilli(),
+	}
+
+	if delaySeconds > 0 {
+		msg.AvailableAt = now.Add(time.Duration(delaySeconds) * time.Second)
 	}
 
 	q.mu.Lock()
@@ -195,6 +226,25 @@ func (q *Queue) nextInflightExpiry() time.Time {
 	return earliest
 }
 
+// nextDelayedAvailability returns the earliest future AvailableAt time among delayed
+// messages in the available slice, or the zero value if there are none. Used to wake
+// long-polling waiters when delayed messages become receivable.
+func (q *Queue) nextDelayedAvailability(now time.Time) time.Time {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var earliest time.Time
+	for _, msg := range q.available {
+		if msg.AvailableAt.IsZero() || !msg.AvailableAt.After(now) {
+			continue
+		}
+		if earliest.IsZero() || msg.AvailableAt.Before(earliest) {
+			earliest = msg.AvailableAt
+		}
+	}
+	return earliest
+}
+
 // notifyWaiters wakes all long-polling waiters. Must be called with q.mu held.
 func (q *Queue) notifyWaiters() {
 	for _, w := range q.waiters {
@@ -211,6 +261,7 @@ func (q *Queue) notifyWaiters() {
 func (e *Engine) ReceiveMessage(ctx context.Context, queueName string, maxMessages, visibilityTimeout, waitTimeSeconds int) ([]*Message, error) {
 	e.mu.RLock()
 	q, exists := e.queues[queueName]
+	nowFn := e.now
 	e.mu.RUnlock()
 
 	if !exists {
@@ -225,7 +276,7 @@ func (e *Engine) ReceiveMessage(ctx context.Context, queueName string, maxMessag
 	}
 
 	// Try to receive immediately.
-	result := e.receiveFromQueue(q, maxMessages, visibilityTimeout)
+	result := receiveFromQueue(q, maxMessages, visibilityTimeout, nowFn)
 	if len(result) > 0 || waitTimeSeconds <= 0 {
 		return result, nil
 	}
@@ -247,16 +298,27 @@ func (e *Engine) ReceiveMessage(ctx context.Context, queueName string, maxMessag
 		q.mu.Unlock()
 	}()
 
-	deadline := e.now().Add(time.Duration(waitTimeSeconds) * time.Second)
+	deadline := nowFn().Add(time.Duration(waitTimeSeconds) * time.Second)
 	for {
-		remaining := deadline.Sub(e.now())
+		now := nowFn()
+		remaining := deadline.Sub(now)
 		if remaining <= 0 {
 			return nil, nil
 		}
 
 		// If inflight messages will expire before the deadline, wake early to requeue them.
 		if nextExpiry := q.nextInflightExpiry(); !nextExpiry.IsZero() {
-			if d := nextExpiry.Sub(e.now()); d > 0 && d < remaining {
+			if d := nextExpiry.Sub(now); d > 0 && d < remaining {
+				remaining = d
+			}
+		}
+
+		// If delayed messages will become available before the deadline, wake early.
+		// Note: notifyWaiters() is called on every SendMessage, so even if a new
+		// delayed message arrives with a shorter delay after this check, the waiter
+		// will be woken, re-loop, and recalculate the timer.
+		if nextDelay := q.nextDelayedAvailability(now); !nextDelay.IsZero() {
+			if d := nextDelay.Sub(now); d > 0 && d < remaining {
 				remaining = d
 			}
 		}
@@ -271,21 +333,21 @@ func (e *Engine) ReceiveMessage(ctx context.Context, queueName string, maxMessag
 		case <-timer.C:
 		}
 
-		result = e.receiveFromQueue(q, maxMessages, visibilityTimeout)
+		result = receiveFromQueue(q, maxMessages, visibilityTimeout, nowFn)
 		if len(result) > 0 {
 			return result, nil
 		}
 
 		// Recompute deadline from engine clock (supports test clock injection).
-		if !e.now().Before(deadline) {
+		if !nowFn().Before(deadline) {
 			return nil, nil
 		}
 	}
 }
 
 // receiveFromQueue attempts to dequeue messages from a queue without blocking.
-func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int) []*Message {
-	now := e.now()
+func receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, nowFn func() time.Time) []*Message {
+	now := nowFn()
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -303,6 +365,12 @@ func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int) 
 	remaining := make([]*Message, 0, len(q.available))
 
 	for _, msg := range q.available {
+		// Skip messages that are still delayed
+		if !msg.AvailableAt.IsZero() && now.Before(msg.AvailableAt) {
+			remaining = append(remaining, msg)
+			continue
+		}
+
 		if len(result) >= maxMessages {
 			remaining = append(remaining, msg)
 			continue
