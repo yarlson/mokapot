@@ -36,7 +36,7 @@ cmd/mokapot/    — entrypoint; configures engine, handler, HTTP server
 internal/httpapi/  — HTTP server, routing (health, root POST, queue-scoped POST)
 internal/query/    — form-encoded request parser, XML response writer, error helpers
 internal/sqs/      — SQS handler (protocol dispatch) + engine (in-memory queue store)
-internal/sns/      — SNS handler (protocol dispatch) + engine (in-memory topic/subscription store, fanout delivery)
+internal/sns/      — SNS handler (protocol dispatch) + engine (in-memory topic/subscription store, fanout delivery) + filter (filter policy parsing and evaluation)
 internal/store/    — interfaces + memory store + bbolt store (planned)
 internal/runtime/  — schedulers, waiter management (planned)
 internal/types/    — shared structs, canonical encodings (planned)
@@ -57,7 +57,8 @@ All via environment variables (optional, with defaults):
 - No per-message goroutine timers (avoid goroutine explosion)
 - No global scheduler goroutine for long polling — each long-polling `ReceiveMessage` manages its own timer and waiter lifecycle
 - **Lock ordering**: when touching two queues (e.g., source → DLQ), unlock the source queue before acquiring the DLQ lock to prevent deadlock
-- **SNS subscription attributes**: per-subscription `sync.RWMutex` protects the `Attributes` map; Publish reads with `RLock`, Set/GetSubscriptionAttributes write/read with `Lock`/`RLock`; `subscriptionsByARN` global index is protected by the engine-level `sync.RWMutex`
+- **SNS subscription attributes**: per-subscription `sync.RWMutex` protects the `Attributes` map and `cachedFilterPolicy`; Publish reads with `RLock`, Set/GetSubscriptionAttributes write/read with `Lock`/`RLock`; `subscriptionsByARN` global index is protected by the engine-level `sync.RWMutex`
+- **FilterPolicy caching**: filter policies are parsed once during `SetSubscriptionAttributes` and stored as `cachedFilterPolicy` on the Subscription struct; Publish reads the cached policy under `RLock` — no JSON parsing on the hot path
 - **DLQ move is lazy**: happens inside `receiveFromQueue`, not via background goroutine
 - `ReceiveMessage` accepts `context.Context` — context cancellation terminates long polls gracefully
 

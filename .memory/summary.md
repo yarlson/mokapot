@@ -38,20 +38,21 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 
 - CreateTopic (idempotent — returns existing topic if name matches)
 - Subscribe (sqs protocol only — endpoint is an SQS queue ARN)
-- Publish with fanout to all SQS subscriptions; messages wrapped in standard SNS JSON envelope (Type, MessageId, TopicArn, Message, Subject, Timestamp, Signature stubs)
-- Get/SetSubscriptionAttributes: per-subscription attribute store with RawMessageDelivery validation (must be "true"/"false")
+- Publish with fanout to all SQS subscriptions; messages wrapped in standard SNS JSON envelope (Type, MessageId, TopicArn, Message, Subject, Timestamp, MessageAttributes, Signature stubs)
+- MessageAttributes: Publish accepts message attributes (both JSON and Query protocols); attributes included in SNS envelope and used for filter policy evaluation
+- Get/SetSubscriptionAttributes: per-subscription attribute store with RawMessageDelivery validation (must be "true"/"false") and FilterPolicy validation (must be valid JSON with supported operators)
 - RawMessageDelivery: when enabled on a subscription, Publish delivers the plain message body instead of the SNS JSON envelope; per-subscription toggle, mixed raw/envelope fanout supported
+- FilterPolicy: per-subscription message filtering; supports exact string match, exact numeric match, prefix, exists/not-exists, anything-but (string/number/array), and numeric range operators (=, >, >=, <, <=); conditions within a key are OR'd, keys are AND'd; parsed and cached on SetSubscriptionAttributes; empty/nil policy passes all messages
 - Dual protocol: AWS Query/XML and AWS JSON 1.0 (same as SQS)
 
 ### SNS (not yet implemented)
 
 - DeleteTopic, ListTopics, Get/SetTopicAttributes
 - Unsubscribe, ListSubscriptionsByTopic
-- FilterPolicy evaluation (exact match, allowlist, exists, anything-but, numeric comparisons)
 
 ## System State
 
-SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, Publish, Get/SetSubscriptionAttributes, RawMessageDelivery) is operational.
+SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, Publish, Get/SetSubscriptionAttributes, RawMessageDelivery, FilterPolicy) is operational.
 
 **Operational:**
 
@@ -73,7 +74,7 @@ SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, P
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 
-**Not yet implemented:** DeleteQueue, ListQueues, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish+Get/SetSubscriptionAttributes, FilterPolicy, persistence
+**Not yet implemented:** DeleteQueue, ListQueues, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish+Get/SetSubscriptionAttributes, persistence
 
 ## Tech Stack
 

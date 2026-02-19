@@ -55,6 +55,7 @@ Query Parser (internal/query/query.go)
   └─▶ SNS Handler (internal/sns/handler.go)
         │ — detects JSON vs Query protocol from Content-Type
         │ — dispatches by Action (CreateTopic, Subscribe, Publish, Set/GetSubscriptionAttributes)
+        │ — parses MessageAttributes from both JSON and Query protocols
         │ — returns XML or JSON responses
         ▼
       SNS Engine (internal/sns/engine.go)
@@ -64,9 +65,15 @@ Query Parser (internal/query/query.go)
         │ — CreateTopic (idempotent), Subscribe (sqs only), Publish
         │ — Get/SetSubscriptionAttributes with per-subscription mutex
         │ — RawMessageDelivery: per-subscription toggle; Publish checks attribute and delivers raw body or SNS envelope
-        │ — Publish builds SNS envelope, fans out via EnqueueFunc callback
+        │ — FilterPolicy: parsed and cached on SetSubscriptionAttributes; evaluated during Publish to skip non-matching subscribers
+        │ — Publish builds SNS envelope (includes MessageAttributes), fans out via EnqueueFunc callback
         │ — injectable clock (now func() time.Time)
         │ — thread-safe via sync.RWMutex + per-topic sync.Mutex + per-subscription sync.RWMutex
+        ▼
+      Filter Policy Engine (internal/sns/filter.go)
+        │ — parses FilterPolicy JSON into typed condition tree
+        │ — supports: exact string, exact numeric, prefix, exists, anything-but, numeric range
+        │ — conditions within a key OR'd; keys AND'd
         ▼
       SQS queue (via EnqueueFunc — no direct sqs import)
 ```
@@ -88,7 +95,7 @@ Query Parser (internal/query/query.go)
 ├── 8  Purge queue ✓
 ├── 9  SNS fanout (envelope) ✓
 │   ├── 10 Raw delivery ✓
-│   └── 11 Filter policies
+│   └── 11 Filter policies ✓
 ├── 13 Persistence (bbolt)
 └── 14 Housekeeping (CRUD lists)
 ```
