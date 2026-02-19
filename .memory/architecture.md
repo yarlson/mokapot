@@ -37,7 +37,8 @@ Query Parser (internal/query/query.go)
   │     │ — in-memory queue store (map[string]*Queue)
   │     │ — per-queue: available []*Message, inflight map, waiter list
   │     │ — visibility timeout with lazy reappearance on ReceiveMessage
-  │     │ — long polling: waiter channels notified on SendMessage; timer-based wakeup for visibility expiry
+  │     │ — long polling: waiter channels notified on SendMessage; timer-based wakeup for visibility expiry and delayed message availability
+  │     │ — delayed messages: per-message or queue-level DelaySeconds; filtered in receiveFromQueue
   │     │ — receipt handle regeneration + ReceiveCount tracking
   │     │ — injectable clock (now func() time.Time)
   │     │ — context-aware ReceiveMessage (cancellable long polls)
@@ -66,7 +67,7 @@ Query Parser (internal/query/query.go)
 │   ├── 4  Long polling ✓
 │   ├── 6  Dead-letter queue
 │   └── 12 Change visibility
-├── 5  Delayed messages
+├── 5  Delayed messages ✓
 ├── 7  Batch operations
 ├── 8  Purge queue
 ├── 9  SNS fanout (envelope)
