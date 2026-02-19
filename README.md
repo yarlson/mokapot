@@ -1,12 +1,12 @@
 # mokapot
 
-A lightweight, in-memory AWS SQS emulator for local development and testing. Built with Go's standard library, mokapot provides a fully-functional SQS mock server that supports both AWS Query API (XML) and AWS JSON 1.0 protocols.
+A lightweight, in-memory AWS service mock for local development and testing. Point your AWS SDK at mokapot instead of real AWS and develop offline with zero credentials.
 
-- **Local SQS development** without AWS credentials or network access
-- **Full SQS API support** including queues, messages, visibility timeout, long polling, delays, and dead-letter queues
-- **AWS SDK compatible** - works with aws-sdk-go-v2 out of the box
+Currently supports **SQS** and **SNS**. More services planned.
+
+- **Drop-in AWS replacement** - works with any AWS SDK via endpoint override
+- **Dual protocol** - AWS Query API (XML) and AWS JSON 1.0
 - **Docker-ready** with multi-stage builds and health checks
-- **99 tests** covering unit and integration scenarios
 
 ---
 
@@ -70,9 +70,9 @@ PORT=5000 REGION=us-east-1 LOG_LEVEL=debug go run ./cmd/mokapot/main.go
 
 ## Ports & Health
 
-| Port | Service           | Description                |
-| ---- | ----------------- | -------------------------- |
-| 4566 | Messaging Service | SQS emulator HTTP endpoint |
+| Port | Service | Description       |
+| ---- | ------- | ----------------- |
+| 4566 | mokapot | AWS mock endpoint |
 
 ### Health Check
 
@@ -157,19 +157,19 @@ The test suite includes:
 | `internal/sqs/`     | SQS engine, message lifecycle, queue management    |
 | `internal/query/`   | AWS Query API parser                               |
 
-### Supported SQS Operations
+### Supported Services
 
-- `CreateQueue` - Create a new queue
-- `GetQueueUrl` - Retrieve queue URL by name
-- `GetQueueAttributes` - Fetch queue configuration
-- `SetQueueAttributes` - Configure visibility timeout, delays, retention, redrive policy
-- `SendMessage` - Send a single message with optional delay
-- `SendMessageBatch` - Send up to 10 messages
-- `ReceiveMessage` - Retrieve messages with visibility timeout
-- `DeleteMessage` - Remove a message from the queue
-- `DeleteMessageBatch` - Delete up to 10 messages
-- Long polling support
-- Dead-letter queue (DLQ) with redrive policy
+#### SQS
+
+- `CreateQueue`, `GetQueueUrl`, `GetQueueAttributes`, `SetQueueAttributes`
+- `SendMessage`, `SendMessageBatch`
+- `ReceiveMessage` with long polling and visibility timeout
+- `DeleteMessage`, `DeleteMessageBatch`
+- Dead-letter queues with redrive policy
+
+#### SNS
+
+Not yet implemented.
 
 ---
 
