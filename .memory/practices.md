@@ -55,12 +55,23 @@ All via environment variables (optional, with defaults):
 - **Long polling**: waiter struct holds a buffered channel; `SendMessage` calls `notifyWaiters()` (under queue lock) to wake all blocked receivers; polling loop also wakes on nearest inflight expiry (reappearing messages) and nearest delayed message availability
 - No per-message goroutine timers (avoid goroutine explosion)
 - No global scheduler goroutine for long polling — each long-polling `ReceiveMessage` manages its own timer and waiter lifecycle
+- **Lock ordering**: when touching two queues (e.g., source → DLQ), unlock the source queue before acquiring the DLQ lock to prevent deadlock
+- **DLQ move is lazy**: happens inside `receiveFromQueue`, not via background goroutine
 - `ReceiveMessage` accepts `context.Context` — context cancellation terminates long polls gracefully
+
+## Queue Attributes
+
+- `mutableAttributes` whitelist in `engine.go` controls which attributes can be set via `SetQueueAttributes`
+- `numericAttributeRanges` map validates min/max bounds for numeric attributes
+- `RedrivePolicy` is validated structurally (JSON parse, required fields) and referentially (DLQ ARN must exist)
+- `GetQueueAttributes` supports `"All"` to return all attributes or specific names
 
 ## Error Handling
 
 - AWS Query-style XML error responses with Code, Message, RequestId
-- HTTP 400 for client errors; correct AWS error codes (QueueDoesNotExist, ReceiptHandleIsInvalid, etc.)
+- HTTP 400 for client errors; correct AWS error codes (QueueDoesNotExist, ReceiptHandleIsInvalid, InvalidParameterValue, etc.)
+- Sentinel errors in `errors.go`; wrap with `fmt.Errorf("%w: detail", ErrFoo)` for `errors.Is` compatibility
+- `sanitizeErrorMessage` strips sentinel prefix before returning to API callers
 
 ## Visual Validation
 

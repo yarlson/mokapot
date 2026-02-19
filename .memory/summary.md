@@ -56,10 +56,12 @@ SQS core message lifecycle is operational. SNS is not yet implemented.
 - Visibility timeout with automatic reappearance: expired inflight messages return to available pool with new receipt handles and incremented ReceiveCount
 - Long polling: ReceiveMessage blocks up to WaitTimeSeconds when no messages are available; wakes on message arrival, visibility timeout expiry, delayed message availability, or context cancellation; supports per-queue default via ReceiveMessageWaitTimeSeconds attribute
 - Delayed messages: per-message DelaySeconds (0–900) overrides queue-level DelaySeconds attribute; delayed messages are invisible until AvailableAt; long-poll waiters wake when delayed messages become receivable
+- Get/SetQueueAttributes with validation (mutable attribute whitelist, numeric range checks)
+- Dead-letter queue: RedrivePolicy (deadLetterTargetArn + maxReceiveCount); messages exceeding maxReceiveCount are moved to DLQ during ReceiveMessage; DLQ existence validated on SetQueueAttributes
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 
-**Not yet implemented:** ListQueues response, batch operations, DLQ, PurgeQueue, ChangeMessageVisibility, SNS, persistence
+**Not yet implemented:** ListQueues response, batch operations, PurgeQueue, ChangeMessageVisibility, SNS, persistence
 
 ## Tech Stack
 

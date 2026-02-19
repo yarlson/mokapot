@@ -39,6 +39,8 @@ Query Parser (internal/query/query.go)
   │     │ — visibility timeout with lazy reappearance on ReceiveMessage
   │     │ — long polling: waiter channels notified on SendMessage; timer-based wakeup for visibility expiry and delayed message availability
   │     │ — delayed messages: per-message or queue-level DelaySeconds; filtered in receiveFromQueue
+  │     │ — dead-letter queue: RedrivePolicy on source queue; messages exceeding maxReceiveCount moved to DLQ during receive
+  │     │ — Get/SetQueueAttributes: mutable attribute whitelist, numeric range validation, RedrivePolicy DLQ existence check
   │     │ — receipt handle regeneration + ReceiveCount tracking
   │     │ — injectable clock (now func() time.Time)
   │     │ — context-aware ReceiveMessage (cancellable long polls)
@@ -65,7 +67,7 @@ Query Parser (internal/query/query.go)
 2  Send + receive + delete ✓  ← foundation
 ├── 3  Visibility timeout ✓ (reappearance + receipt handle invalidation; no ChangeMessageVisibility action yet)
 │   ├── 4  Long polling ✓
-│   ├── 6  Dead-letter queue
+│   ├── 6  Dead-letter queue ✓
 │   └── 12 Change visibility
 ├── 5  Delayed messages ✓
 ├── 7  Batch operations
