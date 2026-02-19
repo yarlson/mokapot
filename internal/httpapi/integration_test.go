@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -675,4 +676,246 @@ func TestIntegration_DLQ_GetRedrivePolicy(t *testing.T) {
 	err = json.Unmarshal([]byte(rpStr), &parsed)
 	require.NoError(t, err)
 	assert.Equal(t, dlqARN, parsed["deadLetterTargetArn"])
+}
+
+// --- Batch operation integration tests ---
+
+func TestIntegration_SendMessageBatch(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("batch-send-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send a batch of 5 messages
+	entries := make([]sqstypes.SendMessageBatchRequestEntry, 5)
+	for i := range 5 {
+		id := fmt.Sprintf("msg-%d", i)
+		body := fmt.Sprintf("body-%d", i)
+		entries[i] = sqstypes.SendMessageBatchRequestEntry{
+			Id:          aws.String(id),
+			MessageBody: aws.String(body),
+		}
+	}
+
+	batchOut, err := client.SendMessageBatch(ctx, &awssqs.SendMessageBatchInput{
+		QueueUrl: queueURL,
+		Entries:  entries,
+	})
+	require.NoError(t, err)
+	assert.Len(t, batchOut.Successful, 5)
+	assert.Empty(t, batchOut.Failed)
+
+	for i, s := range batchOut.Successful {
+		assert.Equal(t, fmt.Sprintf("msg-%d", i), *s.Id)
+		assert.NotEmpty(t, *s.MessageId)
+		assert.NotEmpty(t, *s.MD5OfMessageBody)
+	}
+
+	// Receive all 5 messages
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, recvOut.Messages, 5)
+}
+
+func TestIntegration_SendMessageBatch_WithDelay(t *testing.T) {
+	client, ts, engine := newIntegrationSetup(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	now := time.Now()
+	engine.SetClock(func() time.Time { return now })
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("batch-send-delay-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	batchOut, err := client.SendMessageBatch(ctx, &awssqs.SendMessageBatchInput{
+		QueueUrl: queueURL,
+		Entries: []sqstypes.SendMessageBatchRequestEntry{
+			{
+				Id:          aws.String("immediate"),
+				MessageBody: aws.String("no-delay"),
+			},
+			{
+				Id:           aws.String("delayed"),
+				MessageBody:  aws.String("with-delay"),
+				DelaySeconds: 10,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Len(t, batchOut.Successful, 2)
+
+	// Only immediate message should be receivable
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	assert.Equal(t, "no-delay", *recvOut.Messages[0].Body)
+
+	// Advance past the delay
+	now = now.Add(11 * time.Second)
+	engine.SetClock(func() time.Time { return now })
+
+	recvOut, err = client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	assert.Equal(t, "with-delay", *recvOut.Messages[0].Body)
+}
+
+func TestIntegration_DeleteMessageBatch(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("batch-delete-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send 3 messages
+	for i := range 3 {
+		_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+			QueueUrl:    queueURL,
+			MessageBody: aws.String(fmt.Sprintf("msg-%d", i)),
+		})
+		require.NoError(t, err)
+	}
+
+	// Receive all 3
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 3)
+
+	// Delete all 3 in a batch
+	delEntries := make([]sqstypes.DeleteMessageBatchRequestEntry, len(recvOut.Messages))
+	for i, msg := range recvOut.Messages {
+		delEntries[i] = sqstypes.DeleteMessageBatchRequestEntry{
+			Id:            aws.String(fmt.Sprintf("del-%d", i)),
+			ReceiptHandle: msg.ReceiptHandle,
+		}
+	}
+
+	delOut, err := client.DeleteMessageBatch(ctx, &awssqs.DeleteMessageBatchInput{
+		QueueUrl: queueURL,
+		Entries:  delEntries,
+	})
+	require.NoError(t, err)
+	assert.Len(t, delOut.Successful, 3)
+	assert.Empty(t, delOut.Failed)
+
+	// Queue should be empty
+	recvOut, err = client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvOut.Messages)
+}
+
+func TestIntegration_DeleteMessageBatch_PartialFailure(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("batch-del-partial-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send one message
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    queueURL,
+		MessageBody: aws.String("real-msg"),
+	})
+	require.NoError(t, err)
+
+	// Receive it
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+
+	// Delete batch: one valid handle, one bogus
+	delOut, err := client.DeleteMessageBatch(ctx, &awssqs.DeleteMessageBatchInput{
+		QueueUrl: queueURL,
+		Entries: []sqstypes.DeleteMessageBatchRequestEntry{
+			{
+				Id:            aws.String("good"),
+				ReceiptHandle: recvOut.Messages[0].ReceiptHandle,
+			},
+			{
+				Id:            aws.String("bad"),
+				ReceiptHandle: aws.String("bogus-handle"),
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Len(t, delOut.Successful, 1)
+	assert.Equal(t, "good", *delOut.Successful[0].Id)
+	assert.Len(t, delOut.Failed, 1)
+	assert.Equal(t, "bad", *delOut.Failed[0].Id)
+	assert.Equal(t, "ReceiptHandleIsInvalid", *delOut.Failed[0].Code)
+	assert.True(t, delOut.Failed[0].SenderFault)
+}
+
+func TestIntegration_SendMessageBatch_10Messages(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("batch-10-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send exactly 10 messages (the maximum)
+	entries := make([]sqstypes.SendMessageBatchRequestEntry, 10)
+	for i := range 10 {
+		entries[i] = sqstypes.SendMessageBatchRequestEntry{
+			Id:          aws.String(fmt.Sprintf("msg-%d", i)),
+			MessageBody: aws.String(fmt.Sprintf("body-%d", i)),
+		}
+	}
+
+	batchOut, err := client.SendMessageBatch(ctx, &awssqs.SendMessageBatchInput{
+		QueueUrl: queueURL,
+		Entries:  entries,
+	})
+	require.NoError(t, err)
+	assert.Len(t, batchOut.Successful, 10)
+	assert.Empty(t, batchOut.Failed)
+
+	// Receive all 10 (may take multiple receives due to max 10 per call)
+	var allReceived []sqstypes.Message
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+	})
+	require.NoError(t, err)
+	allReceived = append(allReceived, recvOut.Messages...)
+	assert.Len(t, allReceived, 10)
 }

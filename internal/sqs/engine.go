@@ -3,6 +3,7 @@ package sqs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -321,7 +322,7 @@ func (e *Engine) SendMessage(queueName, body string, delaySeconds int) (*Message
 	}
 
 	if delaySeconds > 900 {
-		delaySeconds = 900
+		return nil, fmt.Errorf("%w: Value for parameter DelaySeconds is invalid. Reason: Must be between 0 and 900", ErrInvalidParameterValue)
 	}
 
 	now := nowFn()
@@ -604,4 +605,164 @@ func (e *Engine) DeleteMessage(queueName, receiptHandle string) error {
 
 	delete(q.inflight, receiptHandle)
 	return nil
+}
+
+// BatchResultEntry represents a successful entry in a batch response.
+type BatchResultEntry struct {
+	ID        string // caller-supplied entry ID
+	MessageID string
+	MD5OfBody string
+}
+
+// BatchError represents a failed entry in a batch response.
+type BatchError struct {
+	ID          string
+	SenderFault bool
+	Code        string
+	Message     string
+}
+
+// SendMessageBatchEntry is a single entry in a SendMessageBatch request.
+type SendMessageBatchEntry struct {
+	ID           string
+	Body         string
+	DelaySeconds int // -1 means use queue default
+}
+
+// SendMessageBatchResult holds the results of a SendMessageBatch call.
+type SendMessageBatchResult struct {
+	Successful []BatchResultEntry
+	Failed     []BatchError
+}
+
+// SendMessageBatch sends up to 10 messages to a queue in one call.
+func (e *Engine) SendMessageBatch(queueName string, entries []SendMessageBatchEntry) (*SendMessageBatchResult, error) {
+	e.mu.RLock()
+	_, exists := e.queues[queueName]
+	e.mu.RUnlock()
+
+	if !exists {
+		return nil, ErrQueueDoesNotExist
+	}
+
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("%w: The batch request must contain at least one entry", ErrEmptyBatchRequest)
+	}
+	if len(entries) > 10 {
+		return nil, fmt.Errorf("%w: Maximum number of entries per request is 10", ErrTooManyEntriesInBatchRequest)
+	}
+
+	// Check for duplicate IDs.
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.ID == "" {
+			return nil, fmt.Errorf("%w: A batch entry id is required for each message in the batch", ErrInvalidParameterValue)
+		}
+		if seen[entry.ID] {
+			return nil, fmt.Errorf("%w: Id %s is not unique within the request", ErrBatchEntryIdsNotDistinct, entry.ID)
+		}
+		seen[entry.ID] = true
+	}
+
+	result := &SendMessageBatchResult{}
+	for _, entry := range entries {
+		if entry.DelaySeconds > 900 {
+			result.Failed = append(result.Failed, BatchError{
+				ID:          entry.ID,
+				SenderFault: true,
+				Code:        "InvalidParameterValue",
+				Message:     "Value for parameter DelaySeconds is invalid. Reason: Must be between 0 and 900.",
+			})
+			continue
+		}
+
+		msg, err := e.SendMessage(queueName, entry.Body, entry.DelaySeconds)
+		if err != nil {
+			result.Failed = append(result.Failed, BatchError{
+				ID:          entry.ID,
+				SenderFault: true,
+				Code:        "InternalError",
+				Message:     err.Error(),
+			})
+			continue
+		}
+
+		result.Successful = append(result.Successful, BatchResultEntry{
+			ID:        entry.ID,
+			MessageID: msg.MessageID,
+			MD5OfBody: msg.MD5OfBody,
+		})
+	}
+
+	return result, nil
+}
+
+// DeleteMessageBatchEntry is a single entry in a DeleteMessageBatch request.
+type DeleteMessageBatchEntry struct {
+	ID            string
+	ReceiptHandle string
+}
+
+// DeleteMessageBatchResult holds the results of a DeleteMessageBatch call.
+type DeleteMessageBatchResult struct {
+	Successful []BatchResultEntry
+	Failed     []BatchError
+}
+
+// DeleteMessageBatch deletes up to 10 messages from a queue in one call.
+func (e *Engine) DeleteMessageBatch(queueName string, entries []DeleteMessageBatchEntry) (*DeleteMessageBatchResult, error) {
+	e.mu.RLock()
+	_, exists := e.queues[queueName]
+	e.mu.RUnlock()
+
+	if !exists {
+		return nil, ErrQueueDoesNotExist
+	}
+
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("%w: The batch request must contain at least one entry", ErrEmptyBatchRequest)
+	}
+	if len(entries) > 10 {
+		return nil, fmt.Errorf("%w: Maximum number of entries per request is 10", ErrTooManyEntriesInBatchRequest)
+	}
+
+	// Check for duplicate IDs.
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.ID == "" {
+			return nil, fmt.Errorf("%w: A batch entry id is required for each message in the batch", ErrInvalidParameterValue)
+		}
+		if seen[entry.ID] {
+			return nil, fmt.Errorf("%w: Id %s is not unique within the request", ErrBatchEntryIdsNotDistinct, entry.ID)
+		}
+		seen[entry.ID] = true
+	}
+
+	result := &DeleteMessageBatchResult{}
+	for _, entry := range entries {
+		err := e.DeleteMessage(queueName, entry.ReceiptHandle)
+		if err != nil {
+			code := "InternalError"
+			msg := err.Error()
+			senderFault := false
+			if errors.Is(err, ErrReceiptHandleIsInvalid) {
+				code = "ReceiptHandleIsInvalid"
+				msg = "The input receipt handle is invalid."
+				senderFault = true
+			}
+			result.Failed = append(result.Failed, BatchError{
+				ID:          entry.ID,
+				SenderFault: senderFault,
+				Code:        code,
+				Message:     msg,
+			})
+			continue
+		}
+
+		result.Successful = append(result.Successful, BatchResultEntry{
+			ID: entry.ID,
+		})
+	}
+
+	return result, nil
 }

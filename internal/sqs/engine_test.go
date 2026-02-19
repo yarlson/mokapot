@@ -912,3 +912,222 @@ func TestDLQ_VisibilityExpiryThenDLQ(t *testing.T) {
 	require.Len(t, dlqReceived, 1)
 	assert.Equal(t, "expire-then-dlq", dlqReceived[0].Body)
 }
+
+// --- SendMessageBatch tests ---
+
+func TestSendMessageBatch(t *testing.T) {
+	e := newEngine()
+	ctx := context.Background()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	entries := []sqs.SendMessageBatchEntry{
+		{ID: "1", Body: "msg-one", DelaySeconds: -1},
+		{ID: "2", Body: "msg-two", DelaySeconds: -1},
+		{ID: "3", Body: "msg-three", DelaySeconds: -1},
+	}
+
+	result, err := e.SendMessageBatch("q", entries)
+	require.NoError(t, err)
+	assert.Len(t, result.Successful, 3)
+	assert.Empty(t, result.Failed)
+
+	for i, s := range result.Successful {
+		assert.Equal(t, entries[i].ID, s.ID)
+		assert.NotEmpty(t, s.MessageID)
+		assert.NotEmpty(t, s.MD5OfBody)
+	}
+
+	// All 3 messages should be receivable
+	received, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	assert.Len(t, received, 3)
+}
+
+func TestSendMessageBatch_NonExistentQueue(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.SendMessageBatch("nonexistent", []sqs.SendMessageBatchEntry{
+		{ID: "1", Body: "body", DelaySeconds: -1},
+	})
+	assert.ErrorIs(t, err, sqs.ErrQueueDoesNotExist)
+}
+
+func TestSendMessageBatch_EmptyBatch(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessageBatch("q", []sqs.SendMessageBatchEntry{})
+	assert.ErrorIs(t, err, sqs.ErrEmptyBatchRequest)
+}
+
+func TestSendMessageBatch_TooManyEntries(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	entries := make([]sqs.SendMessageBatchEntry, 11)
+	for i := range entries {
+		entries[i] = sqs.SendMessageBatchEntry{ID: fmt.Sprintf("%d", i), Body: "body", DelaySeconds: -1}
+	}
+
+	_, err = e.SendMessageBatch("q", entries)
+	assert.ErrorIs(t, err, sqs.ErrTooManyEntriesInBatchRequest)
+}
+
+func TestSendMessageBatch_DuplicateIDs(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	entries := []sqs.SendMessageBatchEntry{
+		{ID: "dup", Body: "one", DelaySeconds: -1},
+		{ID: "dup", Body: "two", DelaySeconds: -1},
+	}
+
+	_, err = e.SendMessageBatch("q", entries)
+	assert.ErrorIs(t, err, sqs.ErrBatchEntryIdsNotDistinct)
+}
+
+func TestSendMessageBatch_WithDelay(t *testing.T) {
+	e := newEngine()
+	ctx := context.Background()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	entries := []sqs.SendMessageBatchEntry{
+		{ID: "1", Body: "immediate", DelaySeconds: 0},
+		{ID: "2", Body: "delayed", DelaySeconds: 10},
+	}
+
+	result, err := e.SendMessageBatch("q", entries)
+	require.NoError(t, err)
+	assert.Len(t, result.Successful, 2)
+	assert.Empty(t, result.Failed)
+
+	// Only immediate message should be receivable
+	received, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "immediate", received[0].Body)
+
+	// Advance past delay
+	now = now.Add(11 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	received, err = e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "delayed", received[0].Body)
+}
+
+// --- DeleteMessageBatch tests ---
+
+func TestDeleteMessageBatch(t *testing.T) {
+	e := newEngine()
+	ctx := context.Background()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Send 3 messages
+	for i := range 3 {
+		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1)
+		require.NoError(t, err)
+	}
+
+	// Receive all 3
+	received, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 3)
+
+	// Delete all 3 in a batch
+	entries := make([]sqs.DeleteMessageBatchEntry, len(received))
+	for i, msg := range received {
+		entries[i] = sqs.DeleteMessageBatchEntry{
+			ID:            fmt.Sprintf("del-%d", i),
+			ReceiptHandle: msg.ReceiptHandle,
+		}
+	}
+
+	result, err := e.DeleteMessageBatch("q", entries)
+	require.NoError(t, err)
+	assert.Len(t, result.Successful, 3)
+	assert.Empty(t, result.Failed)
+
+	// Queue should be empty
+	received, err = e.ReceiveMessage(ctx, "q", 10, 0, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+}
+
+func TestDeleteMessageBatch_PartialFailure(t *testing.T) {
+	e := newEngine()
+	ctx := context.Background()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "msg", -1)
+	require.NoError(t, err)
+
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+
+	entries := []sqs.DeleteMessageBatchEntry{
+		{ID: "good", ReceiptHandle: received[0].ReceiptHandle},
+		{ID: "bad", ReceiptHandle: "bogus-handle"},
+	}
+
+	result, err := e.DeleteMessageBatch("q", entries)
+	require.NoError(t, err)
+	assert.Len(t, result.Successful, 1)
+	assert.Equal(t, "good", result.Successful[0].ID)
+	assert.Len(t, result.Failed, 1)
+	assert.Equal(t, "bad", result.Failed[0].ID)
+	assert.Equal(t, "ReceiptHandleIsInvalid", result.Failed[0].Code)
+}
+
+func TestDeleteMessageBatch_NonExistentQueue(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.DeleteMessageBatch("nonexistent", []sqs.DeleteMessageBatchEntry{
+		{ID: "1", ReceiptHandle: "handle"},
+	})
+	assert.ErrorIs(t, err, sqs.ErrQueueDoesNotExist)
+}
+
+func TestDeleteMessageBatch_EmptyBatch(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.DeleteMessageBatch("q", []sqs.DeleteMessageBatchEntry{})
+	assert.ErrorIs(t, err, sqs.ErrEmptyBatchRequest)
+}
+
+func TestDeleteMessageBatch_DuplicateIDs(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	entries := []sqs.DeleteMessageBatchEntry{
+		{ID: "dup", ReceiptHandle: "handle1"},
+		{ID: "dup", ReceiptHandle: "handle2"},
+	}
+
+	_, err = e.DeleteMessageBatch("q", entries)
+	assert.ErrorIs(t, err, sqs.ErrBatchEntryIdsNotDistinct)
+}

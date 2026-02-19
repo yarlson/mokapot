@@ -294,3 +294,124 @@ func TestXML_SetQueueAttributes_MissingAttrs_Shape(t *testing.T) {
 	assert.Contains(t, body, "<Code>MissingParameter</Code>")
 	assert.Contains(t, body, "<RequestId>")
 }
+
+// --- Golden response shape: SendMessageBatch ---
+
+func TestXML_SendMessageBatch_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=batch-send-queue")
+
+	rec := postQuery(h, "/000000000000/batch-send-queue",
+		"Action=SendMessageBatch"+
+			"&SendMessageBatchRequestEntry.1.Id=msg1"+
+			"&SendMessageBatchRequestEntry.1.MessageBody=hello+one"+
+			"&SendMessageBatchRequestEntry.2.Id=msg2"+
+			"&SendMessageBatchRequestEntry.2.MessageBody=hello+two")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<SendMessageBatchResponse>")
+	assert.Contains(t, body, "<SendMessageBatchResult>")
+	assert.Contains(t, body, "<SendMessageBatchResultEntry>")
+	assert.Contains(t, body, "<Id>msg1</Id>")
+	assert.Contains(t, body, "<Id>msg2</Id>")
+	assert.Contains(t, body, "<MessageId>")
+	assert.Contains(t, body, "<MD5OfMessageBody>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_SendMessageBatch_Empty_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=batch-send-empty-queue")
+
+	rec := postQuery(h, "/000000000000/batch-send-empty-queue", "Action=SendMessageBatch")
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>AWS.SimpleQueueService.EmptyBatchRequest</Code>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+// --- Golden response shape: DeleteMessageBatch ---
+
+func TestXML_DeleteMessageBatch_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=batch-del-queue")
+	postQuery(h, "/000000000000/batch-del-queue", "Action=SendMessage&MessageBody=msg1")
+	postQuery(h, "/000000000000/batch-del-queue", "Action=SendMessage&MessageBody=msg2")
+
+	// Receive both messages
+	recvRec := postQuery(h, "/000000000000/batch-del-queue", "Action=ReceiveMessage&MaxNumberOfMessages=2")
+	require.Equal(t, http.StatusOK, recvRec.Code)
+	recvBody := recvRec.Body.String()
+
+	// Extract receipt handles
+	handles := extractAllReceiptHandles(recvBody)
+	require.Len(t, handles, 2)
+
+	rec := postQuery(h, "/000000000000/batch-del-queue",
+		"Action=DeleteMessageBatch"+
+			"&DeleteMessageBatchRequestEntry.1.Id=del1"+
+			"&DeleteMessageBatchRequestEntry.1.ReceiptHandle="+handles[0]+
+			"&DeleteMessageBatchRequestEntry.2.Id=del2"+
+			"&DeleteMessageBatchRequestEntry.2.ReceiptHandle="+handles[1])
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<DeleteMessageBatchResponse>")
+	assert.Contains(t, body, "<DeleteMessageBatchResult>")
+	assert.Contains(t, body, "<DeleteMessageBatchResultEntry>")
+	assert.Contains(t, body, "<Id>del1</Id>")
+	assert.Contains(t, body, "<Id>del2</Id>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_DeleteMessageBatch_PartialFailure_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=batch-del-partial-queue")
+	postQuery(h, "/000000000000/batch-del-partial-queue", "Action=SendMessage&MessageBody=msg1")
+
+	recvRec := postQuery(h, "/000000000000/batch-del-partial-queue", "Action=ReceiveMessage&MaxNumberOfMessages=1")
+	require.Equal(t, http.StatusOK, recvRec.Code)
+	handles := extractAllReceiptHandles(recvRec.Body.String())
+	require.Len(t, handles, 1)
+
+	rec := postQuery(h, "/000000000000/batch-del-partial-queue",
+		"Action=DeleteMessageBatch"+
+			"&DeleteMessageBatchRequestEntry.1.Id=good"+
+			"&DeleteMessageBatchRequestEntry.1.ReceiptHandle="+handles[0]+
+			"&DeleteMessageBatchRequestEntry.2.Id=bad"+
+			"&DeleteMessageBatchRequestEntry.2.ReceiptHandle=bogus-handle")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<DeleteMessageBatchResponse>")
+	assert.Contains(t, body, "<DeleteMessageBatchResultEntry>")
+	assert.Contains(t, body, "<Id>good</Id>")
+	assert.Contains(t, body, "<BatchResultErrorEntry>")
+	assert.Contains(t, body, "<Id>bad</Id>")
+	assert.Contains(t, body, "<Code>ReceiptHandleIsInvalid</Code>")
+	assert.Contains(t, body, "<SenderFault>true</SenderFault>")
+}
+
+func extractAllReceiptHandles(xmlBody string) []string {
+	var handles []string
+	remaining := xmlBody
+	for {
+		start := strings.Index(remaining, "<ReceiptHandle>")
+		if start < 0 {
+			break
+		}
+		start += len("<ReceiptHandle>")
+		end := strings.Index(remaining[start:], "</ReceiptHandle>")
+		if end < 0 {
+			break
+		}
+		handles = append(handles, remaining[start:start+end])
+		remaining = remaining[start+end:]
+	}
+	return handles
+}

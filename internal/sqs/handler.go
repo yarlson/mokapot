@@ -71,6 +71,10 @@ func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request, pathQueueNa
 		h.receiveMessageJSON(w, r, raw, pathQueueName)
 	case "DeleteMessage":
 		h.deleteMessageJSON(w, raw, pathQueueName)
+	case "SendMessageBatch":
+		h.sendMessageBatchJSON(w, raw, pathQueueName)
+	case "DeleteMessageBatch":
+		h.deleteMessageBatchJSON(w, raw, pathQueueName)
 	default:
 		writeJSONError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not valid for this endpoint.")
 	}
@@ -122,6 +126,12 @@ func writeJSONQueueError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "AWS.SimpleQueueService.NonExistentQueue", "The specified queue does not exist.")
 	case errors.Is(err, ErrReceiptHandleIsInvalid):
 		writeJSONError(w, http.StatusBadRequest, "ReceiptHandleIsInvalid", "The input receipt handle is invalid.")
+	case errors.Is(err, ErrEmptyBatchRequest):
+		writeJSONError(w, http.StatusBadRequest, "AWS.SimpleQueueService.EmptyBatchRequest", sanitizeErrorMessage(err))
+	case errors.Is(err, ErrTooManyEntriesInBatchRequest):
+		writeJSONError(w, http.StatusBadRequest, "AWS.SimpleQueueService.TooManyEntriesInBatchRequest", sanitizeErrorMessage(err))
+	case errors.Is(err, ErrBatchEntryIdsNotDistinct):
+		writeJSONError(w, http.StatusBadRequest, "AWS.SimpleQueueService.BatchEntryIdsNotDistinct", sanitizeErrorMessage(err))
 	case errors.Is(err, ErrInvalidParameterValue):
 		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", sanitizeErrorMessage(err))
 	default:
@@ -431,6 +441,10 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request, pathQueueN
 		h.receiveMessageXML(w, r, params, pathQueueName)
 	case "DeleteMessage":
 		h.deleteMessageXML(w, params, pathQueueName)
+	case "SendMessageBatch":
+		h.sendMessageBatchXML(w, params, pathQueueName)
+	case "DeleteMessageBatch":
+		h.deleteMessageBatchXML(w, params, pathQueueName)
 	default:
 		query.WriteError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not valid for this endpoint.")
 	}
@@ -772,9 +786,300 @@ func writeQueueErrorXML(w http.ResponseWriter, err error) {
 		query.WriteError(w, http.StatusBadRequest, "AWS.SimpleQueueService.NonExistentQueue", "The specified queue does not exist.")
 	case errors.Is(err, ErrReceiptHandleIsInvalid):
 		query.WriteError(w, http.StatusBadRequest, "ReceiptHandleIsInvalid", "The input receipt handle is invalid.")
+	case errors.Is(err, ErrEmptyBatchRequest):
+		query.WriteError(w, http.StatusBadRequest, "AWS.SimpleQueueService.EmptyBatchRequest", sanitizeErrorMessage(err))
+	case errors.Is(err, ErrTooManyEntriesInBatchRequest):
+		query.WriteError(w, http.StatusBadRequest, "AWS.SimpleQueueService.TooManyEntriesInBatchRequest", sanitizeErrorMessage(err))
+	case errors.Is(err, ErrBatchEntryIdsNotDistinct):
+		query.WriteError(w, http.StatusBadRequest, "AWS.SimpleQueueService.BatchEntryIdsNotDistinct", sanitizeErrorMessage(err))
 	case errors.Is(err, ErrInvalidParameterValue):
 		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", sanitizeErrorMessage(err))
 	default:
 		query.WriteError(w, http.StatusInternalServerError, "InternalError", "An internal error occurred.")
 	}
+}
+
+// --- SendMessageBatch handlers ---
+
+func (h *Handler) sendMessageBatchJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
+	queueName := pathQueueName
+	if queueName == "" {
+		queueName = queueNameFromURL(jsonString(raw, "QueueUrl"))
+	}
+	if queueName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	type jsonBatchEntry struct {
+		Id           string `json:"Id"`
+		MessageBody  string `json:"MessageBody"`
+		DelaySeconds *int   `json:"DelaySeconds,omitempty"`
+	}
+
+	var entries []jsonBatchEntry
+	if v, ok := raw["Entries"]; ok {
+		if err := json.Unmarshal(v, &entries); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Failed to parse Entries.")
+			return
+		}
+	}
+
+	batchEntries := make([]SendMessageBatchEntry, len(entries))
+	for i, e := range entries {
+		ds := -1
+		if e.DelaySeconds != nil {
+			ds = *e.DelaySeconds
+		}
+		batchEntries[i] = SendMessageBatchEntry{
+			ID:           e.Id,
+			Body:         e.MessageBody,
+			DelaySeconds: ds,
+		}
+	}
+
+	result, err := h.engine.SendMessageBatch(queueName, batchEntries)
+	if err != nil {
+		writeJSONQueueError(w, err)
+		return
+	}
+
+	type successEntry struct {
+		Id               string `json:"Id"`
+		MessageId        string `json:"MessageId"`
+		MD5OfMessageBody string `json:"MD5OfMessageBody"`
+	}
+	type failEntry struct {
+		Id          string `json:"Id"`
+		SenderFault bool   `json:"SenderFault"`
+		Code        string `json:"Code"`
+		Message     string `json:"Message"`
+	}
+
+	successful := make([]successEntry, 0, len(result.Successful))
+	for _, s := range result.Successful {
+		successful = append(successful, successEntry{
+			Id:               s.ID,
+			MessageId:        s.MessageID,
+			MD5OfMessageBody: s.MD5OfBody,
+		})
+	}
+	failed := make([]failEntry, 0, len(result.Failed))
+	for _, f := range result.Failed {
+		failed = append(failed, failEntry{
+			Id:          f.ID,
+			SenderFault: f.SenderFault,
+			Code:        f.Code,
+			Message:     f.Message,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"Successful": successful,
+		"Failed":     failed,
+	})
+}
+
+type sendMessageBatchXMLResponse struct {
+	XMLName  xml.Name                    `xml:"SendMessageBatchResponse"`
+	Result   sendMessageBatchXMLResult   `xml:"SendMessageBatchResult"`
+	Metadata query.ResponseMetadata
+}
+
+type sendMessageBatchXMLResult struct {
+	Successful []sendMessageBatchXMLSuccess `xml:"SendMessageBatchResultEntry,omitempty"`
+	Failed     []batchXMLError              `xml:"BatchResultErrorEntry,omitempty"`
+}
+
+type sendMessageBatchXMLSuccess struct {
+	ID        string `xml:"Id"`
+	MessageID string `xml:"MessageId"`
+	MD5OfBody string `xml:"MD5OfMessageBody"`
+}
+
+type batchXMLError struct {
+	ID          string `xml:"Id"`
+	SenderFault bool   `xml:"SenderFault"`
+	Code        string `xml:"Code"`
+	Message     string `xml:"Message"`
+}
+
+func (h *Handler) sendMessageBatchXML(w http.ResponseWriter, params query.Params, queueName string) {
+	if queueName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	var entries []SendMessageBatchEntry
+	for i := 1; ; i++ {
+		id := params.Get(fmt.Sprintf("SendMessageBatchRequestEntry.%d.Id", i))
+		if id == "" {
+			break
+		}
+		body := params.Get(fmt.Sprintf("SendMessageBatchRequestEntry.%d.MessageBody", i))
+		ds := -1
+		if dsStr := params.Get(fmt.Sprintf("SendMessageBatchRequestEntry.%d.DelaySeconds", i)); dsStr != "" {
+			v, err := strconv.Atoi(dsStr)
+			if err != nil {
+				query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Value for parameter DelaySeconds is invalid. Reason: Must be between 0 and 900.")
+				return
+			}
+			ds = v
+		}
+		entries = append(entries, SendMessageBatchEntry{
+			ID:           id,
+			Body:         body,
+			DelaySeconds: ds,
+		})
+	}
+
+	result, err := h.engine.SendMessageBatch(queueName, entries)
+	if err != nil {
+		writeQueueErrorXML(w, err)
+		return
+	}
+
+	var successful []sendMessageBatchXMLSuccess
+	for _, s := range result.Successful {
+		successful = append(successful, sendMessageBatchXMLSuccess(s))
+	}
+	var failed []batchXMLError
+	for _, f := range result.Failed {
+		failed = append(failed, batchXMLError(f))
+	}
+
+	query.WriteXML(w, http.StatusOK, sendMessageBatchXMLResponse{
+		Result: sendMessageBatchXMLResult{
+			Successful: successful,
+			Failed:     failed,
+		},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- DeleteMessageBatch handlers ---
+
+func (h *Handler) deleteMessageBatchJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
+	queueName := pathQueueName
+	if queueName == "" {
+		queueName = queueNameFromURL(jsonString(raw, "QueueUrl"))
+	}
+	if queueName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	type jsonBatchEntry struct {
+		Id            string `json:"Id"`
+		ReceiptHandle string `json:"ReceiptHandle"`
+	}
+
+	var entries []jsonBatchEntry
+	if v, ok := raw["Entries"]; ok {
+		if err := json.Unmarshal(v, &entries); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Failed to parse Entries.")
+			return
+		}
+	}
+
+	batchEntries := make([]DeleteMessageBatchEntry, len(entries))
+	for i, e := range entries {
+		batchEntries[i] = DeleteMessageBatchEntry{
+			ID:            e.Id,
+			ReceiptHandle: e.ReceiptHandle,
+		}
+	}
+
+	result, err := h.engine.DeleteMessageBatch(queueName, batchEntries)
+	if err != nil {
+		writeJSONQueueError(w, err)
+		return
+	}
+
+	type successEntry struct {
+		Id string `json:"Id"`
+	}
+	type failEntry struct {
+		Id          string `json:"Id"`
+		SenderFault bool   `json:"SenderFault"`
+		Code        string `json:"Code"`
+		Message     string `json:"Message"`
+	}
+
+	successful := make([]successEntry, 0, len(result.Successful))
+	for _, s := range result.Successful {
+		successful = append(successful, successEntry{Id: s.ID})
+	}
+	failed := make([]failEntry, 0, len(result.Failed))
+	for _, f := range result.Failed {
+		failed = append(failed, failEntry{
+			Id:          f.ID,
+			SenderFault: f.SenderFault,
+			Code:        f.Code,
+			Message:     f.Message,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"Successful": successful,
+		"Failed":     failed,
+	})
+}
+
+type deleteMessageBatchXMLResponse struct {
+	XMLName  xml.Name                      `xml:"DeleteMessageBatchResponse"`
+	Result   deleteMessageBatchXMLResult   `xml:"DeleteMessageBatchResult"`
+	Metadata query.ResponseMetadata
+}
+
+type deleteMessageBatchXMLResult struct {
+	Successful []deleteMessageBatchXMLSuccess `xml:"DeleteMessageBatchResultEntry,omitempty"`
+	Failed     []batchXMLError                `xml:"BatchResultErrorEntry,omitempty"`
+}
+
+type deleteMessageBatchXMLSuccess struct {
+	ID string `xml:"Id"`
+}
+
+func (h *Handler) deleteMessageBatchXML(w http.ResponseWriter, params query.Params, queueName string) {
+	if queueName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	var entries []DeleteMessageBatchEntry
+	for i := 1; ; i++ {
+		id := params.Get(fmt.Sprintf("DeleteMessageBatchRequestEntry.%d.Id", i))
+		if id == "" {
+			break
+		}
+		handle := params.Get(fmt.Sprintf("DeleteMessageBatchRequestEntry.%d.ReceiptHandle", i))
+		entries = append(entries, DeleteMessageBatchEntry{
+			ID:            id,
+			ReceiptHandle: handle,
+		})
+	}
+
+	result, err := h.engine.DeleteMessageBatch(queueName, entries)
+	if err != nil {
+		writeQueueErrorXML(w, err)
+		return
+	}
+
+	var successful []deleteMessageBatchXMLSuccess
+	for _, s := range result.Successful {
+		successful = append(successful, deleteMessageBatchXMLSuccess{ID: s.ID})
+	}
+	var failed []batchXMLError
+	for _, f := range result.Failed {
+		failed = append(failed, batchXMLError(f))
+	}
+
+	query.WriteXML(w, http.StatusOK, deleteMessageBatchXMLResponse{
+		Result: deleteMessageBatchXMLResult{
+			Successful: successful,
+			Failed:     failed,
+		},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
 }
