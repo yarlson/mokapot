@@ -16,10 +16,10 @@ mokapot (cmd/mokapot/main.go)
   │ — graceful shutdown on SIGINT/SIGTERM
   │
   ▼
-httpapi.NewServer(sqsHandler) (internal/httpapi/server.go)
+httpapi.NewServer(sqsHandler, snsHandler) (internal/httpapi/server.go)
   │ — http.ServeMux routing
   │ — GET /_health
-  │ — POST / → handleRoot → sqsHandler.HandleRequest
+  │ — POST / → handleRoot → isSNSRequest() → snsHandler or sqsHandler
   │ — POST /{accountId}/{queueName} → handleQueueScoped → sqsHandler.HandleRequest
   │
   ▼
@@ -52,11 +52,20 @@ Query Parser (internal/query/query.go)
   │     ├─ memory (default)
   │     └─ bbolt (optional persistence)
   │
-  └─▶ SNS Handlers (planned: internal/sns/)
-        │ — topic/subscription management
-        │ — publish → filter → deliver to SQS queues
+  └─▶ SNS Handler (internal/sns/handler.go)
+        │ — detects JSON vs Query protocol from Content-Type
+        │ — dispatches by Action (CreateTopic, Subscribe, Publish)
+        │ — returns XML or JSON responses
         ▼
-      SQS queue (internal enqueue)
+      SNS Engine (internal/sns/engine.go)
+        │ — in-memory topic store (map[string]*Topic)
+        │ — per-topic: Subscriptions slice, per-topic mutex
+        │ — CreateTopic (idempotent), Subscribe (sqs only), Publish
+        │ — Publish builds SNS envelope, fans out via EnqueueFunc callback
+        │ — injectable clock (now func() time.Time)
+        │ — thread-safe via sync.RWMutex + per-topic sync.Mutex
+        ▼
+      SQS queue (via EnqueueFunc — no direct sqs import)
 ```
 
 ## Implementation Slices
@@ -74,7 +83,7 @@ Query Parser (internal/query/query.go)
 ├── 5  Delayed messages ✓
 ├── 7  Batch operations ✓ (SendMessageBatch, DeleteMessageBatch)
 ├── 8  Purge queue ✓
-├── 9  SNS fanout (envelope)
+├── 9  SNS fanout (envelope) ✓
 │   ├── 10 Raw delivery
 │   └── 11 Filter policies
 ├── 13 Persistence (bbolt)

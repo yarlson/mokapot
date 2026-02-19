@@ -36,7 +36,7 @@ cmd/mokapot/    — entrypoint; configures engine, handler, HTTP server
 internal/httpapi/  — HTTP server, routing (health, root POST, queue-scoped POST)
 internal/query/    — form-encoded request parser, XML response writer, error helpers
 internal/sqs/      — SQS handler (protocol dispatch) + engine (in-memory queue store)
-internal/sns/      — handlers + topic/subscription + delivery (planned)
+internal/sns/      — SNS handler (protocol dispatch) + engine (in-memory topic/subscription store, fanout delivery)
 internal/store/    — interfaces + memory store + bbolt store (planned)
 internal/runtime/  — schedulers, waiter management (planned)
 internal/types/    — shared structs, canonical encodings (planned)

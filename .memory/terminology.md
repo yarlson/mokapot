@@ -18,6 +18,8 @@
 
 **DLQ (Dead-letter queue)** — a queue that receives messages exceeding maxReceiveCount on their source queue
 
+**SNS Envelope** — standard JSON wrapper added by SNS around published messages before delivery to SQS; contains Type, MessageId, TopicArn, Message, Subject, Timestamp, Signature stubs
+
 **RawMessageDelivery** — SNS subscription attribute; when true, published message body is delivered unwrapped (no SNS JSON envelope)
 
 **FilterPolicy** — JSON on an SNS subscription; only messages with matching attributes are delivered
@@ -33,5 +35,7 @@
 **Inflight** — a message currently held by a consumer (after receive, before delete or visibility expiry)
 
 **PurgeQueue** — removes all messages (available, inflight, delayed) from a queue; AWS enforces a 60-second cooldown between purges (PurgeQueueInProgress error)
+
+**EnqueueFunc** — `func(queueName, body string) error` callback injected into the SNS engine for delivering messages to SQS without a direct package dependency
 
 **bbolt** — embedded key-value store used as optional persistence backend (`DATA_DIR/state.db`)

@@ -9,8 +9,9 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 - **Single Go binary** (`mokapot`) serving HTTP on port 4566
 - **Dual protocol**: AWS Query (form-encoded + XML) and AWS JSON 1.0 (`application/x-amz-json-1.0` + JSON)
 - **SigV4 passthrough**: accepts signed requests without validating signatures
-- **Routing**: `POST /` for global actions (CreateQueue, ListQueues), `POST /{accountId}/{queueName}` for queue-scoped actions
+- **Routing**: `POST /` dispatches to SQS or SNS based on Content-Type and Action/X-Amz-Target headers; `POST /{accountId}/{queueName}` for queue-scoped SQS actions
 - **SNS delivery protocol**: `sqs` only (no http/email/sms/lambda)
+- **SNS→SQS coupling**: SNS engine receives an `EnqueueFunc` callback; no direct import of the `sqs` package
 
 ## Core Flow
 
@@ -33,17 +34,23 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 - Dead-letter queue with RedrivePolicy
 - PurgeQueue (60-second cooldown)
 
-### SNS (planned, not yet implemented)
+### SNS
 
-- Topic CRUD (CreateTopic, DeleteTopic, ListTopics, Get/SetTopicAttributes)
-- Subscriptions (Subscribe, Unsubscribe, ListSubscriptionsByTopic, Get/SetSubscriptionAttributes)
-- Publish with fanout to SQS queues
+- CreateTopic (idempotent — returns existing topic if name matches)
+- Subscribe (sqs protocol only — endpoint is an SQS queue ARN)
+- Publish with fanout to all SQS subscriptions; messages wrapped in standard SNS JSON envelope (Type, MessageId, TopicArn, Message, Subject, Timestamp, Signature stubs)
+- Dual protocol: AWS Query/XML and AWS JSON 1.0 (same as SQS)
+
+### SNS (not yet implemented)
+
+- DeleteTopic, ListTopics, Get/SetTopicAttributes
+- Unsubscribe, ListSubscriptionsByTopic, Get/SetSubscriptionAttributes
 - RawMessageDelivery toggle
 - FilterPolicy evaluation (exact match, allowlist, exists, anything-but, numeric comparisons)
 
 ## System State
 
-SQS core message lifecycle is operational. SNS is not yet implemented.
+SQS core message lifecycle is operational. SNS basic fanout (CreateTopic, Subscribe, Publish) is operational.
 
 **Operational:**
 
@@ -65,7 +72,7 @@ SQS core message lifecycle is operational. SNS is not yet implemented.
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 
-**Not yet implemented:** DeleteQueue, ListQueues, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS, persistence
+**Not yet implemented:** DeleteQueue, ListQueues, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish, RawMessageDelivery, FilterPolicy, persistence
 
 ## Tech Stack
 
