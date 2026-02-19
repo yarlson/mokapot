@@ -78,6 +78,10 @@ func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request, pathQueueNa
 		h.deleteMessageBatchJSON(w, raw, pathQueueName)
 	case "PurgeQueue":
 		h.purgeQueueJSON(w, raw, pathQueueName)
+	case "ChangeMessageVisibility":
+		h.changeMessageVisibilityJSON(w, raw, pathQueueName)
+	case "ChangeMessageVisibilityBatch":
+		h.changeMessageVisibilityBatchJSON(w, raw, pathQueueName)
 	default:
 		writeJSONError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not valid for this endpoint.")
 	}
@@ -456,6 +460,10 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request, pathQueueN
 		h.deleteMessageBatchXML(w, params, pathQueueName)
 	case "PurgeQueue":
 		h.purgeQueueXML(w, params, pathQueueName)
+	case "ChangeMessageVisibility":
+		h.changeMessageVisibilityXML(w, params, pathQueueName)
+	case "ChangeMessageVisibilityBatch":
+		h.changeMessageVisibilityBatchXML(w, params, pathQueueName)
 	default:
 		query.WriteError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not valid for this endpoint.")
 	}
@@ -1136,6 +1144,219 @@ func (h *Handler) purgeQueueXML(w http.ResponseWriter, params query.Params, queu
 	}
 
 	query.WriteXML(w, http.StatusOK, purgeQueueXMLResponse{
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- ChangeMessageVisibility handlers ---
+
+func (h *Handler) changeMessageVisibilityJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
+	handle := jsonString(raw, "ReceiptHandle")
+	if handle == "" {
+		writeJSONError(w, http.StatusBadRequest, "MissingParameter", "The request must contain the parameter ReceiptHandle.")
+		return
+	}
+
+	queueName := pathQueueName
+	if queueName == "" {
+		queueName = queueNameFromURL(jsonString(raw, "QueueUrl"))
+	}
+	if queueName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	vt, ok := jsonInt(raw, "VisibilityTimeout")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "MissingParameter", "The request must contain the parameter VisibilityTimeout.")
+		return
+	}
+
+	err := h.engine.ChangeMessageVisibility(queueName, handle, vt)
+	if err != nil {
+		writeJSONQueueError(w, err)
+		return
+	}
+
+	writeJSON(w, map[string]any{})
+}
+
+type changeMessageVisibilityXMLResponse struct {
+	XMLName  xml.Name `xml:"ChangeMessageVisibilityResponse"`
+	Metadata query.ResponseMetadata
+}
+
+func (h *Handler) changeMessageVisibilityXML(w http.ResponseWriter, params query.Params, queueName string) {
+	handle := params.Get("ReceiptHandle")
+	if handle == "" {
+		query.WriteError(w, http.StatusBadRequest, "MissingParameter", "The request must contain the parameter ReceiptHandle.")
+		return
+	}
+
+	if queueName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	vtStr := params.Get("VisibilityTimeout")
+	if vtStr == "" {
+		query.WriteError(w, http.StatusBadRequest, "MissingParameter", "The request must contain the parameter VisibilityTimeout.")
+		return
+	}
+
+	vt, err := strconv.Atoi(vtStr)
+	if err != nil {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Value for parameter VisibilityTimeout is invalid.")
+		return
+	}
+
+	err = h.engine.ChangeMessageVisibility(queueName, handle, vt)
+	if err != nil {
+		writeQueueErrorXML(w, err)
+		return
+	}
+
+	query.WriteXML(w, http.StatusOK, changeMessageVisibilityXMLResponse{
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- ChangeMessageVisibilityBatch handlers ---
+
+func (h *Handler) changeMessageVisibilityBatchJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
+	queueName := pathQueueName
+	if queueName == "" {
+		queueName = queueNameFromURL(jsonString(raw, "QueueUrl"))
+	}
+	if queueName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	type jsonBatchEntry struct {
+		Id                string `json:"Id"`
+		ReceiptHandle     string `json:"ReceiptHandle"`
+		VisibilityTimeout int    `json:"VisibilityTimeout"`
+	}
+
+	var entries []jsonBatchEntry
+	if v, ok := raw["Entries"]; ok {
+		if err := json.Unmarshal(v, &entries); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Failed to parse Entries.")
+			return
+		}
+	}
+
+	batchEntries := make([]ChangeMessageVisibilityBatchEntry, len(entries))
+	for i, e := range entries {
+		batchEntries[i] = ChangeMessageVisibilityBatchEntry{
+			ID:                e.Id,
+			ReceiptHandle:     e.ReceiptHandle,
+			VisibilityTimeout: e.VisibilityTimeout,
+		}
+	}
+
+	result, err := h.engine.ChangeMessageVisibilityBatch(queueName, batchEntries)
+	if err != nil {
+		writeJSONQueueError(w, err)
+		return
+	}
+
+	type successEntry struct {
+		Id string `json:"Id"`
+	}
+	type failEntry struct {
+		Id          string `json:"Id"`
+		SenderFault bool   `json:"SenderFault"`
+		Code        string `json:"Code"`
+		Message     string `json:"Message"`
+	}
+
+	successful := make([]successEntry, 0, len(result.Successful))
+	for _, s := range result.Successful {
+		successful = append(successful, successEntry{Id: s.ID})
+	}
+	failed := make([]failEntry, 0, len(result.Failed))
+	for _, f := range result.Failed {
+		failed = append(failed, failEntry{
+			Id:          f.ID,
+			SenderFault: f.SenderFault,
+			Code:        f.Code,
+			Message:     f.Message,
+		})
+	}
+
+	writeJSON(w, map[string]any{
+		"Successful": successful,
+		"Failed":     failed,
+	})
+}
+
+type changeMessageVisibilityBatchXMLResponse struct {
+	XMLName  xml.Name                              `xml:"ChangeMessageVisibilityBatchResponse"`
+	Result   changeMessageVisibilityBatchXMLResult `xml:"ChangeMessageVisibilityBatchResult"`
+	Metadata query.ResponseMetadata
+}
+
+type changeMessageVisibilityBatchXMLResult struct {
+	Successful []changeMessageVisibilityBatchXMLSuccess `xml:"ChangeMessageVisibilityBatchResultEntry,omitempty"`
+	Failed     []batchXMLError                          `xml:"BatchResultErrorEntry,omitempty"`
+}
+
+type changeMessageVisibilityBatchXMLSuccess struct {
+	ID string `xml:"Id"`
+}
+
+func (h *Handler) changeMessageVisibilityBatchXML(w http.ResponseWriter, params query.Params, queueName string) {
+	if queueName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	var entries []ChangeMessageVisibilityBatchEntry
+	for i := 1; ; i++ {
+		id := params.Get(fmt.Sprintf("ChangeMessageVisibilityBatchRequestEntry.%d.Id", i))
+		if id == "" {
+			break
+		}
+		handle := params.Get(fmt.Sprintf("ChangeMessageVisibilityBatchRequestEntry.%d.ReceiptHandle", i))
+		vtStr := params.Get(fmt.Sprintf("ChangeMessageVisibilityBatchRequestEntry.%d.VisibilityTimeout", i))
+		vt := 0
+		if vtStr != "" {
+			v, err := strconv.Atoi(vtStr)
+			if err != nil {
+				query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Value for parameter VisibilityTimeout is invalid.")
+				return
+			}
+			vt = v
+		}
+		entries = append(entries, ChangeMessageVisibilityBatchEntry{
+			ID:                id,
+			ReceiptHandle:     handle,
+			VisibilityTimeout: vt,
+		})
+	}
+
+	result, err := h.engine.ChangeMessageVisibilityBatch(queueName, entries)
+	if err != nil {
+		writeQueueErrorXML(w, err)
+		return
+	}
+
+	var successful []changeMessageVisibilityBatchXMLSuccess
+	for _, s := range result.Successful {
+		successful = append(successful, changeMessageVisibilityBatchXMLSuccess{ID: s.ID})
+	}
+	var failed []batchXMLError
+	for _, f := range result.Failed {
+		failed = append(failed, batchXMLError(f))
+	}
+
+	query.WriteXML(w, http.StatusOK, changeMessageVisibilityBatchXMLResponse{
+		Result: changeMessageVisibilityBatchXMLResult{
+			Successful: successful,
+			Failed:     failed,
+		},
 		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
 	})
 }

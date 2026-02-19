@@ -1067,6 +1067,248 @@ func TestIntegration_PurgeQueue_CooldownEnforced(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// --- ChangeMessageVisibility integration tests ---
+
+func TestIntegration_ChangeMessageVisibility_ExtendTimeout(t *testing.T) {
+	client, ts, engine := newIntegrationSetup(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	now := time.Now()
+	engine.SetClock(func() time.Time { return now })
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("cmv-extend-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send a message
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    queueURL,
+		MessageBody: aws.String("extend me"),
+	})
+	require.NoError(t, err)
+
+	// Receive with 5-second visibility
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+		VisibilityTimeout:   5,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	handle := recvOut.Messages[0].ReceiptHandle
+
+	// Extend visibility to 60 seconds
+	_, err = client.ChangeMessageVisibility(ctx, &awssqs.ChangeMessageVisibilityInput{
+		QueueUrl:          queueURL,
+		ReceiptHandle:     handle,
+		VisibilityTimeout: 60,
+	})
+	require.NoError(t, err)
+
+	// Advance 10 seconds — original 5s timeout would have expired
+	now = now.Add(10 * time.Second)
+	engine.SetClock(func() time.Time { return now })
+
+	// Message should still be invisible
+	recvEmpty, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvEmpty.Messages)
+
+	// Advance past the extended timeout
+	now = now.Add(51 * time.Second)
+	engine.SetClock(func() time.Time { return now })
+
+	// Message should now reappear
+	recvOut2, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut2.Messages, 1)
+	assert.Equal(t, "extend me", *recvOut2.Messages[0].Body)
+}
+
+func TestIntegration_ChangeMessageVisibility_SetToZero(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("cmv-zero-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    queueURL,
+		MessageBody: aws.String("nack me"),
+	})
+	require.NoError(t, err)
+
+	// Receive with long visibility
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+		VisibilityTimeout:   300,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	handle := recvOut.Messages[0].ReceiptHandle
+
+	// Set visibility to 0 — message becomes available immediately
+	_, err = client.ChangeMessageVisibility(ctx, &awssqs.ChangeMessageVisibilityInput{
+		QueueUrl:          queueURL,
+		ReceiptHandle:     handle,
+		VisibilityTimeout: 0,
+	})
+	require.NoError(t, err)
+
+	// Message should be receivable again
+	recvOut2, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut2.Messages, 1)
+	assert.Equal(t, "nack me", *recvOut2.Messages[0].Body)
+}
+
+func TestIntegration_ChangeMessageVisibility_InvalidHandle(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("cmv-invalid-queue"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.ChangeMessageVisibility(ctx, &awssqs.ChangeMessageVisibilityInput{
+		QueueUrl:          createOut.QueueUrl,
+		ReceiptHandle:     aws.String("bogus-handle"),
+		VisibilityTimeout: 30,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ReceiptHandleIsInvalid")
+}
+
+func TestIntegration_ChangeMessageVisibilityBatch(t *testing.T) {
+	client, ts, engine := newIntegrationSetup(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	now := time.Now()
+	engine.SetClock(func() time.Time { return now })
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("cmvb-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send 3 messages
+	for i := range 3 {
+		_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+			QueueUrl:    queueURL,
+			MessageBody: aws.String(fmt.Sprintf("msg-%d", i)),
+		})
+		require.NoError(t, err)
+	}
+
+	// Receive all 3 with short visibility
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+		VisibilityTimeout:   5,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 3)
+
+	// Extend visibility of all 3 in a batch
+	batchEntries := make([]sqstypes.ChangeMessageVisibilityBatchRequestEntry, len(recvOut.Messages))
+	for i, msg := range recvOut.Messages {
+		batchEntries[i] = sqstypes.ChangeMessageVisibilityBatchRequestEntry{
+			Id:                aws.String(fmt.Sprintf("cv-%d", i)),
+			ReceiptHandle:     msg.ReceiptHandle,
+			VisibilityTimeout: 60,
+		}
+	}
+
+	batchOut, err := client.ChangeMessageVisibilityBatch(ctx, &awssqs.ChangeMessageVisibilityBatchInput{
+		QueueUrl: queueURL,
+		Entries:  batchEntries,
+	})
+	require.NoError(t, err)
+	assert.Len(t, batchOut.Successful, 3)
+	assert.Empty(t, batchOut.Failed)
+
+	// Advance 10 seconds — original 5s timeout would have expired
+	now = now.Add(10 * time.Second)
+	engine.SetClock(func() time.Time { return now })
+
+	// Messages should still be invisible
+	recvEmpty, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvEmpty.Messages)
+}
+
+func TestIntegration_ChangeMessageVisibilityBatch_PartialFailure(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("cmvb-partial-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    queueURL,
+		MessageBody: aws.String("msg"),
+	})
+	require.NoError(t, err)
+
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+
+	batchOut, err := client.ChangeMessageVisibilityBatch(ctx, &awssqs.ChangeMessageVisibilityBatchInput{
+		QueueUrl: queueURL,
+		Entries: []sqstypes.ChangeMessageVisibilityBatchRequestEntry{
+			{
+				Id:                aws.String("good"),
+				ReceiptHandle:     recvOut.Messages[0].ReceiptHandle,
+				VisibilityTimeout: 60,
+			},
+			{
+				Id:                aws.String("bad"),
+				ReceiptHandle:     aws.String("bogus-handle"),
+				VisibilityTimeout: 60,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Len(t, batchOut.Successful, 1)
+	assert.Equal(t, "good", *batchOut.Successful[0].Id)
+	assert.Len(t, batchOut.Failed, 1)
+	assert.Equal(t, "bad", *batchOut.Failed[0].Id)
+	assert.Equal(t, "ReceiptHandleIsInvalid", *batchOut.Failed[0].Code)
+	assert.True(t, batchOut.Failed[0].SenderFault)
+}
+
 // --- SNS integration tests ---
 
 type snsIntegrationSetup struct {

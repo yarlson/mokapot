@@ -397,6 +397,117 @@ func TestXML_DeleteMessageBatch_PartialFailure_Shape(t *testing.T) {
 	assert.Contains(t, body, "<SenderFault>true</SenderFault>")
 }
 
+// --- Golden response shape: ChangeMessageVisibility ---
+
+func TestXML_ChangeMessageVisibility_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=cmv-queue")
+	postQuery(h, "/000000000000/cmv-queue", "Action=SendMessage&MessageBody=cmv+body")
+
+	// Receive to get a handle
+	recvRec := postQuery(h, "/000000000000/cmv-queue", "Action=ReceiveMessage&MaxNumberOfMessages=1")
+	require.Equal(t, http.StatusOK, recvRec.Code)
+
+	handles := extractAllReceiptHandles(recvRec.Body.String())
+	require.Len(t, handles, 1)
+
+	rec := postQuery(h, "/000000000000/cmv-queue", "Action=ChangeMessageVisibility&ReceiptHandle="+handles[0]+"&VisibilityTimeout=60")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ChangeMessageVisibilityResponse>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_ChangeMessageVisibility_InvalidHandle_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=cmv-err-queue")
+
+	rec := postQuery(h, "/000000000000/cmv-err-queue", "Action=ChangeMessageVisibility&ReceiptHandle=bogus&VisibilityTimeout=30")
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>ReceiptHandleIsInvalid</Code>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_ChangeMessageVisibility_MissingParams_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=cmv-missing-queue")
+
+	rec := postQuery(h, "/000000000000/cmv-missing-queue", "Action=ChangeMessageVisibility&ReceiptHandle=some-handle")
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>MissingParameter</Code>")
+}
+
+// --- Golden response shape: ChangeMessageVisibilityBatch ---
+
+func TestXML_ChangeMessageVisibilityBatch_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=cmvb-queue")
+	postQuery(h, "/000000000000/cmvb-queue", "Action=SendMessage&MessageBody=msg1")
+	postQuery(h, "/000000000000/cmvb-queue", "Action=SendMessage&MessageBody=msg2")
+
+	recvRec := postQuery(h, "/000000000000/cmvb-queue", "Action=ReceiveMessage&MaxNumberOfMessages=2")
+	require.Equal(t, http.StatusOK, recvRec.Code)
+	handles := extractAllReceiptHandles(recvRec.Body.String())
+	require.Len(t, handles, 2)
+
+	rec := postQuery(h, "/000000000000/cmvb-queue",
+		"Action=ChangeMessageVisibilityBatch"+
+			"&ChangeMessageVisibilityBatchRequestEntry.1.Id=cv1"+
+			"&ChangeMessageVisibilityBatchRequestEntry.1.ReceiptHandle="+handles[0]+
+			"&ChangeMessageVisibilityBatchRequestEntry.1.VisibilityTimeout=60"+
+			"&ChangeMessageVisibilityBatchRequestEntry.2.Id=cv2"+
+			"&ChangeMessageVisibilityBatchRequestEntry.2.ReceiptHandle="+handles[1]+
+			"&ChangeMessageVisibilityBatchRequestEntry.2.VisibilityTimeout=120")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ChangeMessageVisibilityBatchResponse>")
+	assert.Contains(t, body, "<ChangeMessageVisibilityBatchResult>")
+	assert.Contains(t, body, "<ChangeMessageVisibilityBatchResultEntry>")
+	assert.Contains(t, body, "<Id>cv1</Id>")
+	assert.Contains(t, body, "<Id>cv2</Id>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_ChangeMessageVisibilityBatch_PartialFailure_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=cmvb-partial-queue")
+	postQuery(h, "/000000000000/cmvb-partial-queue", "Action=SendMessage&MessageBody=msg1")
+
+	recvRec := postQuery(h, "/000000000000/cmvb-partial-queue", "Action=ReceiveMessage&MaxNumberOfMessages=1")
+	require.Equal(t, http.StatusOK, recvRec.Code)
+	handles := extractAllReceiptHandles(recvRec.Body.String())
+	require.Len(t, handles, 1)
+
+	rec := postQuery(h, "/000000000000/cmvb-partial-queue",
+		"Action=ChangeMessageVisibilityBatch"+
+			"&ChangeMessageVisibilityBatchRequestEntry.1.Id=good"+
+			"&ChangeMessageVisibilityBatchRequestEntry.1.ReceiptHandle="+handles[0]+
+			"&ChangeMessageVisibilityBatchRequestEntry.1.VisibilityTimeout=60"+
+			"&ChangeMessageVisibilityBatchRequestEntry.2.Id=bad"+
+			"&ChangeMessageVisibilityBatchRequestEntry.2.ReceiptHandle=bogus-handle"+
+			"&ChangeMessageVisibilityBatchRequestEntry.2.VisibilityTimeout=60")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ChangeMessageVisibilityBatchResponse>")
+	assert.Contains(t, body, "<ChangeMessageVisibilityBatchResultEntry>")
+	assert.Contains(t, body, "<Id>good</Id>")
+	assert.Contains(t, body, "<BatchResultErrorEntry>")
+	assert.Contains(t, body, "<Id>bad</Id>")
+	assert.Contains(t, body, "<Code>ReceiptHandleIsInvalid</Code>")
+	assert.Contains(t, body, "<SenderFault>true</SenderFault>")
+}
+
 func extractAllReceiptHandles(xmlBody string) []string {
 	var handles []string
 	remaining := xmlBody

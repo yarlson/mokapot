@@ -626,6 +626,122 @@ func (e *Engine) PurgeQueue(queueName string) error {
 	return nil
 }
 
+// ChangeMessageVisibility updates the visibility timeout of an inflight message.
+// If visibilityTimeout is 0, the message becomes immediately available again.
+// The visibilityTimeout must be between 0 and 43200 seconds.
+func (e *Engine) ChangeMessageVisibility(queueName, receiptHandle string, visibilityTimeout int) error {
+	if visibilityTimeout < 0 || visibilityTimeout > 43200 {
+		return fmt.Errorf("%w: Value for parameter VisibilityTimeout is invalid. Reason: Must be between 0 and 43200", ErrInvalidParameterValue)
+	}
+
+	e.mu.RLock()
+	q, exists := e.queues[queueName]
+	nowFn := e.now
+	e.mu.RUnlock()
+
+	if !exists {
+		return ErrQueueDoesNotExist
+	}
+
+	now := nowFn()
+
+	q.mu.Lock()
+	msg, ok := q.inflight[receiptHandle]
+	if !ok {
+		q.mu.Unlock()
+		return ErrReceiptHandleIsInvalid
+	}
+
+	if visibilityTimeout == 0 {
+		// Move message back to available immediately.
+		delete(q.inflight, receiptHandle)
+		msg.ReceiptHandle = ""
+		msg.InvisibleUntil = time.Time{}
+		q.available = append(q.available, msg)
+		q.notifyWaiters()
+	} else {
+		msg.InvisibleUntil = now.Add(time.Duration(visibilityTimeout) * time.Second)
+	}
+	q.mu.Unlock()
+
+	return nil
+}
+
+// ChangeMessageVisibilityBatchEntry is a single entry in a ChangeMessageVisibilityBatch request.
+type ChangeMessageVisibilityBatchEntry struct {
+	ID                string
+	ReceiptHandle     string
+	VisibilityTimeout int
+}
+
+// ChangeMessageVisibilityBatchResult holds the results of a ChangeMessageVisibilityBatch call.
+type ChangeMessageVisibilityBatchResult struct {
+	Successful []BatchResultEntry
+	Failed     []BatchError
+}
+
+// ChangeMessageVisibilityBatch changes the visibility timeout of up to 10 messages in one call.
+func (e *Engine) ChangeMessageVisibilityBatch(queueName string, entries []ChangeMessageVisibilityBatchEntry) (*ChangeMessageVisibilityBatchResult, error) {
+	e.mu.RLock()
+	_, exists := e.queues[queueName]
+	e.mu.RUnlock()
+
+	if !exists {
+		return nil, ErrQueueDoesNotExist
+	}
+
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("%w: The batch request must contain at least one entry", ErrEmptyBatchRequest)
+	}
+	if len(entries) > 10 {
+		return nil, fmt.Errorf("%w: Maximum number of entries per request is 10", ErrTooManyEntriesInBatchRequest)
+	}
+
+	// Check for duplicate IDs.
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.ID == "" {
+			return nil, fmt.Errorf("%w: A batch entry id is required for each message in the batch", ErrInvalidParameterValue)
+		}
+		if seen[entry.ID] {
+			return nil, fmt.Errorf("%w: Id %s is not unique within the request", ErrBatchEntryIdsNotDistinct, entry.ID)
+		}
+		seen[entry.ID] = true
+	}
+
+	result := &ChangeMessageVisibilityBatchResult{}
+	for _, entry := range entries {
+		err := e.ChangeMessageVisibility(queueName, entry.ReceiptHandle, entry.VisibilityTimeout)
+		if err != nil {
+			code := "InternalError"
+			msg := err.Error()
+			senderFault := false
+			if errors.Is(err, ErrReceiptHandleIsInvalid) {
+				code = "ReceiptHandleIsInvalid"
+				msg = "The input receipt handle is invalid."
+				senderFault = true
+			} else if errors.Is(err, ErrInvalidParameterValue) {
+				code = "InvalidParameterValue"
+				msg = sanitizeErrorMessage(err)
+				senderFault = true
+			}
+			result.Failed = append(result.Failed, BatchError{
+				ID:          entry.ID,
+				SenderFault: senderFault,
+				Code:        code,
+				Message:     msg,
+			})
+			continue
+		}
+
+		result.Successful = append(result.Successful, BatchResultEntry{
+			ID: entry.ID,
+		})
+	}
+
+	return result, nil
+}
+
 // DeleteMessage removes an inflight message by receipt handle.
 func (e *Engine) DeleteMessage(queueName, receiptHandle string) error {
 	e.mu.RLock()

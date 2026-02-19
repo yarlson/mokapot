@@ -1294,3 +1294,286 @@ func TestPurgeQueue_ClearsDelayedMessages(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, received)
 }
+
+// --- ChangeMessageVisibility tests ---
+
+func TestChangeMessageVisibility_ExtendTimeout(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "msg", -1)
+	require.NoError(t, err)
+
+	// Receive with 5-second visibility
+	received, err := e.ReceiveMessage(ctx, "q", 1, 5, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	handle := received[0].ReceiptHandle
+
+	// Extend visibility to 60 seconds
+	err = e.ChangeMessageVisibility("q", handle, 60)
+	require.NoError(t, err)
+
+	// Advance 10 seconds — would have expired with original 5s timeout
+	now = now.Add(10 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Message should still be invisible
+	received2, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received2)
+
+	// Advance past the extended timeout (60s total from when we changed it)
+	now = now.Add(51 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Message should now reappear
+	received3, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received3, 1)
+	assert.Equal(t, "msg", received3[0].Body)
+}
+
+func TestChangeMessageVisibility_SetToZero_ReleasesImmediately(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "nack-me", -1)
+	require.NoError(t, err)
+
+	// Receive with long visibility
+	received, err := e.ReceiveMessage(ctx, "q", 1, 300, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	handle := received[0].ReceiptHandle
+
+	// Set visibility to 0 — message should become available immediately
+	err = e.ChangeMessageVisibility("q", handle, 0)
+	require.NoError(t, err)
+
+	// Message should be receivable again immediately
+	received2, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received2, 1)
+	assert.Equal(t, "nack-me", received2[0].Body)
+	assert.Equal(t, 2, received2[0].ReceiveCount)
+	// Old receipt handle should be different
+	assert.NotEqual(t, handle, received2[0].ReceiptHandle)
+}
+
+func TestChangeMessageVisibility_InvalidHandle(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	err = e.ChangeMessageVisibility("q", "bogus-handle", 30)
+	assert.ErrorIs(t, err, sqs.ErrReceiptHandleIsInvalid)
+}
+
+func TestChangeMessageVisibility_NonExistentQueue(t *testing.T) {
+	e := newEngine()
+
+	err := e.ChangeMessageVisibility("nonexistent", "some-handle", 30)
+	assert.ErrorIs(t, err, sqs.ErrQueueDoesNotExist)
+}
+
+func TestChangeMessageVisibility_InvalidTimeout(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	err = e.ChangeMessageVisibility("q", "some-handle", -1)
+	assert.ErrorIs(t, err, sqs.ErrInvalidParameterValue)
+
+	err = e.ChangeMessageVisibility("q", "some-handle", 43201)
+	assert.ErrorIs(t, err, sqs.ErrInvalidParameterValue)
+}
+
+func TestChangeMessageVisibility_OldHandleInvalidAfterZero(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "msg", -1)
+	require.NoError(t, err)
+
+	received, err := e.ReceiveMessage(ctx, "q", 1, 300, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	oldHandle := received[0].ReceiptHandle
+
+	// Set visibility to 0
+	err = e.ChangeMessageVisibility("q", oldHandle, 0)
+	require.NoError(t, err)
+
+	// Old handle should no longer be usable for delete
+	err = e.DeleteMessage("q", oldHandle)
+	assert.ErrorIs(t, err, sqs.ErrReceiptHandleIsInvalid)
+}
+
+func TestChangeMessageVisibility_SetToZero_WakesLongPollers(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "wake-msg", -1)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// Receive the message with long visibility
+	received, err := e.ReceiveMessage(ctx, "q", 1, 300, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	handle := received[0].ReceiptHandle
+
+	// Start a long-polling receiver
+	var polled []*sqs.Message
+	var pollErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	ready := make(chan struct{})
+	go func() {
+		defer wg.Done()
+		close(ready)
+		polled, pollErr = e.ReceiveMessage(ctx, "q", 1, 30, 5)
+	}()
+
+	// Wait for the goroutine to be scheduled, then give the waiter time to register.
+	<-ready
+	time.Sleep(50 * time.Millisecond)
+
+	// Set visibility to 0 — should wake the long poller
+	err = e.ChangeMessageVisibility("q", handle, 0)
+	require.NoError(t, err)
+
+	wg.Wait()
+	require.NoError(t, pollErr)
+	require.Len(t, polled, 1)
+	assert.Equal(t, "wake-msg", polled[0].Body)
+}
+
+// --- ChangeMessageVisibilityBatch tests ---
+
+func TestChangeMessageVisibilityBatch(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Send 3 messages
+	for i := range 3 {
+		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1)
+		require.NoError(t, err)
+	}
+
+	// Receive all 3
+	received, err := e.ReceiveMessage(ctx, "q", 10, 5, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 3)
+
+	// Change visibility of all 3 in a batch
+	entries := make([]sqs.ChangeMessageVisibilityBatchEntry, len(received))
+	for i, msg := range received {
+		entries[i] = sqs.ChangeMessageVisibilityBatchEntry{
+			ID:                fmt.Sprintf("cv-%d", i),
+			ReceiptHandle:     msg.ReceiptHandle,
+			VisibilityTimeout: 60,
+		}
+	}
+
+	result, err := e.ChangeMessageVisibilityBatch("q", entries)
+	require.NoError(t, err)
+	assert.Len(t, result.Successful, 3)
+	assert.Empty(t, result.Failed)
+
+	// Advance 10 seconds — original 5s timeout would have expired
+	now = now.Add(10 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Messages should still be invisible
+	received2, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received2)
+}
+
+func TestChangeMessageVisibilityBatch_PartialFailure(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "msg", -1)
+	require.NoError(t, err)
+
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+
+	entries := []sqs.ChangeMessageVisibilityBatchEntry{
+		{ID: "good", ReceiptHandle: received[0].ReceiptHandle, VisibilityTimeout: 60},
+		{ID: "bad", ReceiptHandle: "bogus-handle", VisibilityTimeout: 60},
+	}
+
+	result, err := e.ChangeMessageVisibilityBatch("q", entries)
+	require.NoError(t, err)
+	assert.Len(t, result.Successful, 1)
+	assert.Equal(t, "good", result.Successful[0].ID)
+	assert.Len(t, result.Failed, 1)
+	assert.Equal(t, "bad", result.Failed[0].ID)
+	assert.Equal(t, "ReceiptHandleIsInvalid", result.Failed[0].Code)
+}
+
+func TestChangeMessageVisibilityBatch_NonExistentQueue(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.ChangeMessageVisibilityBatch("nonexistent", []sqs.ChangeMessageVisibilityBatchEntry{
+		{ID: "1", ReceiptHandle: "handle", VisibilityTimeout: 30},
+	})
+	assert.ErrorIs(t, err, sqs.ErrQueueDoesNotExist)
+}
+
+func TestChangeMessageVisibilityBatch_EmptyBatch(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.ChangeMessageVisibilityBatch("q", []sqs.ChangeMessageVisibilityBatchEntry{})
+	assert.ErrorIs(t, err, sqs.ErrEmptyBatchRequest)
+}
+
+func TestChangeMessageVisibilityBatch_DuplicateIDs(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	entries := []sqs.ChangeMessageVisibilityBatchEntry{
+		{ID: "dup", ReceiptHandle: "handle1", VisibilityTimeout: 30},
+		{ID: "dup", ReceiptHandle: "handle2", VisibilityTimeout: 30},
+	}
+
+	_, err = e.ChangeMessageVisibilityBatch("q", entries)
+	assert.ErrorIs(t, err, sqs.ErrBatchEntryIdsNotDistinct)
+}
