@@ -1,184 +1,104 @@
 # mokapot
 
-A lightweight, in-memory AWS service mock for local development and testing. Point your AWS SDK at mokapot instead of real AWS and develop offline with zero credentials.
+Local AWS mock. One binary, zero credentials.
 
-Currently supports **SQS** and **SNS**. More services planned.
+Point any AWS SDK at `localhost:4566` and stop waiting for cloud roundtrips. mokapot speaks both AWS protocols (Query/XML and JSON 1.0) so Go, Node, PHP, and Python SDKs work out of the box.
 
-- **Drop-in AWS replacement** - works with any AWS SDK via endpoint override
-- **Dual protocol** - AWS Query API (XML) and AWS JSON 1.0
-- **Docker-ready** with multi-stage builds and health checks
+**Currently implemented: SQS.** SNS is next.
 
----
-
-## Prerequisites
-
-| Requirement | Version                                |
-| ----------- | -------------------------------------- |
-| Go          | 1.25.0+                                |
-| Docker      | Optional, for containerized deployment |
-
----
-
-## Run (Local)
-
-### Using Go directly
+## Quick start
 
 ```bash
-# Install dependencies
-go mod download
+# Go
+go run ./cmd/mokapot
 
-# Run the server
-go run ./cmd/mokapot/main.go
-```
-
-### Using Docker Compose
-
-```bash
-docker-compose up
-```
-
-### Building a binary
-
-```bash
-CGO_ENABLED=0 go build -o mokapot ./cmd/mokapot
-./mokapot
-```
-
-The server listens on port **4566** by default.
-
----
-
-## Configuration
-
-All configuration is via environment variables. All variables are optional with sensible defaults.
-
-| Variable     | Description                          | Default        |
-| ------------ | ------------------------------------ | -------------- |
-| `PORT`       | HTTP server port                     | `4566`         |
-| `REGION`     | AWS region for queue ARNs            | `eu-central-1` |
-| `ACCOUNT_ID` | AWS account ID for queue ARNs        | `000000000000` |
-| `SQS_HOST`   | Hostname for queue URLs              | `localhost`    |
-| `LOG_LEVEL`  | Log level (debug, info, warn, error) | `info`         |
-
-### Example
-
-```bash
-PORT=5000 REGION=us-east-1 LOG_LEVEL=debug go run ./cmd/mokapot/main.go
-```
-
----
-
-## Ports & Health
-
-| Port | Service | Description       |
-| ---- | ------- | ----------------- |
-| 4566 | mokapot | AWS mock endpoint |
-
-### Health Check
-
-```bash
-curl http://localhost:4566/_health
-```
-
-**Response:**
-
-```json
-{ "status": "ok" }
-```
-
----
-
-## Dependencies
-
-### Direct Dependencies
-
-| Package                                    | Purpose                         |
-| ------------------------------------------ | ------------------------------- |
-| `github.com/aws/aws-sdk-go-v2`             | AWS SDK core                    |
-| `github.com/aws/aws-sdk-go-v2/credentials` | AWS credentials handling        |
-| `github.com/aws/aws-sdk-go-v2/service/sqs` | SQS service client              |
-| `github.com/google/uuid`                   | UUID generation for message IDs |
-| `github.com/stretchr/testify`              | Testing assertions              |
-
----
-
-## Deploy
-
-### Docker
-
-Build and run the container:
-
-```bash
+# Docker
 docker build -t mokapot .
 docker run -p 4566:4566 mokapot
-```
 
-### Docker Compose
-
-```bash
+# Docker Compose
 docker-compose up
 ```
 
-### Graceful Shutdown
+Server listens on `:4566`. Health check at `GET /_health`.
 
-The server handles `SIGINT` and `SIGTERM` signals with a graceful shutdown timeout, ensuring in-flight requests complete before termination.
+## What works
 
----
+### SQS
 
-## Troubleshooting
+Full message lifecycle with both protocols:
 
-No known issues documented. Check the following for debugging:
+| Category | Operations                                                               |
+| -------- | ------------------------------------------------------------------------ |
+| Queues   | `CreateQueue`, `GetQueueUrl`, `GetQueueAttributes`, `SetQueueAttributes` |
+| Messages | `SendMessage`, `ReceiveMessage`, `DeleteMessage`                         |
+| Batches  | `SendMessageBatch`, `DeleteMessageBatch` (partial failure, max 10)       |
 
-- Set `LOG_LEVEL=debug` for verbose logging
-- Verify the health endpoint: `GET /_health`
-- Ensure port 4566 is not in use by another process
+Plus the hard parts:
 
----
+- **Long polling** - `WaitTimeSeconds` up to 20s, wakes on new messages, visibility expiry, or delay expiry
+- **Visibility timeout** - inflight tracking, auto-requeue with new receipt handles, `ReceiveCount` increment
+- **Delayed messages** - per-message `DelaySeconds` (0-900) overrides queue default
+- **Dead-letter queues** - `RedrivePolicy` with `maxReceiveCount`, auto-migration to DLQ
 
-## Development
-
-### Running Tests
-
-```bash
-go test ./...
-```
-
-The test suite includes:
-
-- Unit tests for the SQS engine, handlers, and query parser
-- Integration tests using the AWS SDK v2 for Go
-
-### Project Structure
-
-| Directory           | Purpose                                            |
-| ------------------- | -------------------------------------------------- |
-| `cmd/mokapot/`      | Server entry point, signal handling, configuration |
-| `internal/httpapi/` | HTTP routing and protocol detection                |
-| `internal/sqs/`     | SQS engine, message lifecycle, queue management    |
-| `internal/query/`   | AWS Query API parser                               |
-
-### Supported Services
-
-#### SQS
-
-- `CreateQueue`, `GetQueueUrl`, `GetQueueAttributes`, `SetQueueAttributes`
-- `SendMessage`, `SendMessageBatch`
-- `ReceiveMessage` with long polling and visibility timeout
-- `DeleteMessage`, `DeleteMessageBatch`
-- Dead-letter queues with redrive policy
-
-#### SNS
+### SNS
 
 Not yet implemented.
 
----
+## Configuration
 
-## Contributing
+All env vars, all optional:
 
-Not documented. Check repository for contribution guidelines.
+| Variable     | Default        | Purpose                             |
+| ------------ | -------------- | ----------------------------------- |
+| `PORT`       | `4566`         | Server port                         |
+| `REGION`     | `eu-central-1` | Region in ARNs and queue URLs       |
+| `ACCOUNT_ID` | `000000000000` | Account ID in ARNs and queue URLs   |
+| `SQS_HOST`   | `localhost`    | Hostname in queue URLs              |
+| `LOG_LEVEL`  | `info`         | `debug` / `info` / `warn` / `error` |
 
----
+## SDK wiring
 
-## License
+Point your SDK's endpoint at mokapot. Credentials can be anything:
 
-Not documented. Check repository for license information.
+```go
+// Go
+client := sqs.New(sqs.Options{
+    Region:       "eu-central-1",
+    BaseEndpoint: aws.String("http://localhost:4566"),
+    Credentials:  credentials.NewStaticCredentialsProvider("x", "x", ""),
+})
+```
+
+```javascript
+// Node.js
+const client = new SQSClient({
+  region: "eu-central-1",
+  endpoint: "http://localhost:4566",
+  credentials: { accessKeyId: "x", secretAccessKey: "x" },
+});
+```
+
+## Development
+
+```bash
+go test ./...        # 99 tests - unit + integration (real AWS SDK client)
+golangci-lint run    # lint
+```
+
+### Project layout
+
+```
+cmd/mokapot/        Server entrypoint, config, signal handling
+internal/httpapi/   HTTP routing, protocol detection (JSON vs XML)
+internal/sqs/       Queue engine, message lifecycle, handlers
+internal/query/     AWS Query API (form-encoded) parser
+```
+
+### Design notes
+
+- **stdlib only** - no HTTP framework, just `net/http`
+- **In-memory** - no persistence, data gone on restart
+- **Thread-safe** - engine-level RWMutex + per-queue mutex
+- **Injectable clock** - `Engine.SetClock()` for deterministic time tests, no `time.Sleep` in test suite
+- **Dual protocol from one handler** - Content-Type sniffing routes to JSON or XML codepath
