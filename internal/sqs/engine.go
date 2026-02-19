@@ -22,9 +22,6 @@ type redrivePolicy struct {
 // parseRedrivePolicy parses a RedrivePolicy JSON string.
 // Returns nil if the string is empty.
 func parseRedrivePolicy(s string) (*redrivePolicy, error) {
-	if s == "" {
-		return nil, nil
-	}
 	var rp redrivePolicy
 	if err := json.Unmarshal([]byte(s), &rp); err != nil {
 		return nil, fmt.Errorf("invalid RedrivePolicy JSON: %w", err)
@@ -172,8 +169,11 @@ func (e *Engine) GetQueueVisibilityTimeout(name string) (int, error) {
 		return 0, ErrQueueDoesNotExist
 	}
 	q.mu.Lock()
-	vt, _ := strconv.Atoi(q.Attributes["VisibilityTimeout"])
+	vt, err := strconv.Atoi(q.Attributes["VisibilityTimeout"])
 	q.mu.Unlock()
+	if err != nil {
+		return 0, fmt.Errorf("invalid VisibilityTimeout: %w", err)
+	}
 	return vt, nil
 }
 
@@ -187,8 +187,11 @@ func (e *Engine) GetQueueWaitTimeSeconds(name string) (int, error) {
 		return 0, ErrQueueDoesNotExist
 	}
 	q.mu.Lock()
-	wt, _ := strconv.Atoi(q.Attributes["ReceiveMessageWaitTimeSeconds"])
+	wt, err := strconv.Atoi(q.Attributes["ReceiveMessageWaitTimeSeconds"])
 	q.mu.Unlock()
+	if err != nil {
+		return 0, fmt.Errorf("invalid ReceiveMessageWaitTimeSeconds: %w", err)
+	}
 	return wt, nil
 }
 
@@ -287,7 +290,7 @@ func (e *Engine) SetQueueAttributes(queueName string, attrs map[string]string) e
 	if rpJSON, ok := attrs["RedrivePolicy"]; ok {
 		rp, err := parseRedrivePolicy(rpJSON)
 		if err != nil {
-			return fmt.Errorf("%w: RedrivePolicy: %s", ErrInvalidParameterValue, err)
+			return fmt.Errorf("%w: RedrivePolicy: %w", ErrInvalidParameterValue, err)
 		}
 		// Verify the DLQ target exists
 		e.mu.RLock()
@@ -330,8 +333,11 @@ func (e *Engine) SendMessage(queueName, body string, delaySeconds int) (*Message
 
 	if delaySeconds < 0 {
 		q.mu.Lock()
-		ds, _ := strconv.Atoi(q.Attributes["DelaySeconds"])
+		ds, err := strconv.Atoi(q.Attributes["DelaySeconds"])
 		q.mu.Unlock()
+		if err != nil {
+			return nil, fmt.Errorf("invalid DelaySeconds: %w", err)
+		}
 		delaySeconds = ds
 	}
 
@@ -497,9 +503,13 @@ func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, 
 	q.mu.Lock()
 
 	// Parse RedrivePolicy under the queue lock.
-	rp, rpErr := parseRedrivePolicy(q.Attributes["RedrivePolicy"])
-	if rpErr != nil {
-		slog.Warn("invalid RedrivePolicy on queue, ignoring", "queue", q.Name, "err", rpErr)
+	var rp *redrivePolicy
+	if rpStr := q.Attributes["RedrivePolicy"]; rpStr != "" {
+		var rpErr error
+		rp, rpErr = parseRedrivePolicy(rpStr)
+		if rpErr != nil {
+			slog.Warn("invalid RedrivePolicy on queue, ignoring", "queue", q.Name, "err", rpErr)
+		}
 	}
 
 	// Requeue expired inflight messages
@@ -551,7 +561,7 @@ func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, 
 	// Unlock source queue before touching the DLQ to avoid lock ordering issues.
 	if len(dlqMessages) > 0 {
 		q.mu.Unlock()
-		e.moveToDLQ(rp.DeadLetterTargetARN, dlqMessages, now)
+		e.moveToDLQ(rp.DeadLetterTargetARN, dlqMessages)
 	} else {
 		q.mu.Unlock()
 	}
@@ -560,7 +570,7 @@ func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, 
 }
 
 // moveToDLQ enqueues messages into the dead-letter queue identified by ARN.
-func (e *Engine) moveToDLQ(dlqARN string, messages []*Message, now time.Time) {
+func (e *Engine) moveToDLQ(dlqARN string, messages []*Message) {
 	e.mu.RLock()
 	dlq := e.queueByARN(dlqARN)
 	e.mu.RUnlock()

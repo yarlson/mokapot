@@ -695,10 +695,11 @@ func TestSetQueueAttributes_RedrivePolicy_ValidatesDLQExists(t *testing.T) {
 	_, err := e.CreateQueue("source")
 	require.NoError(t, err)
 
-	rp, _ := json.Marshal(map[string]any{
+	rp, err := json.Marshal(map[string]any{
 		"deadLetterTargetArn": "arn:aws:sqs:eu-central-1:000000000000:nonexistent",
 		"maxReceiveCount":     3,
 	})
+	require.NoError(t, err)
 
 	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
 	assert.Error(t, err)
@@ -716,10 +717,11 @@ func TestDLQ_MessageMovedAfterMaxReceiveCount(t *testing.T) {
 	dlq, err := e.CreateQueue("dlq")
 	require.NoError(t, err)
 
-	rp, _ := json.Marshal(map[string]any{
+	rp, err := json.Marshal(map[string]any{
 		"deadLetterTargetArn": dlq.ARN,
 		"maxReceiveCount":     3,
 	})
+	require.NoError(t, err)
 	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
 	require.NoError(t, err)
 
@@ -760,10 +762,11 @@ func TestDLQ_OnlyPoisonMessageMoved(t *testing.T) {
 	dlq, err := e.CreateQueue("dlq")
 	require.NoError(t, err)
 
-	rp, _ := json.Marshal(map[string]any{
+	rp, err := json.Marshal(map[string]any{
 		"deadLetterTargetArn": dlq.ARN,
 		"maxReceiveCount":     2,
 	})
+	require.NoError(t, err)
 	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
 	require.NoError(t, err)
 
@@ -832,10 +835,11 @@ func TestDLQ_MaxReceiveCountOne(t *testing.T) {
 	dlq, err := e.CreateQueue("dlq")
 	require.NoError(t, err)
 
-	rp, _ := json.Marshal(map[string]any{
+	rp, err := json.Marshal(map[string]any{
 		"deadLetterTargetArn": dlq.ARN,
 		"maxReceiveCount":     1,
 	})
+	require.NoError(t, err)
 	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
 	require.NoError(t, err)
 
@@ -872,10 +876,11 @@ func TestDLQ_VisibilityExpiryThenDLQ(t *testing.T) {
 	dlq, err := e.CreateQueue("dlq")
 	require.NoError(t, err)
 
-	rp, _ := json.Marshal(map[string]any{
+	rp, err := json.Marshal(map[string]any{
 		"deadLetterTargetArn": dlq.ARN,
 		"maxReceiveCount":     2,
 	})
+	require.NoError(t, err)
 	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
 	require.NoError(t, err)
 

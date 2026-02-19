@@ -3,6 +3,7 @@ package query
 import (
 	"encoding/xml"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 
@@ -50,7 +51,9 @@ func WriteXML(w http.ResponseWriter, status int, v any) {
 	_, _ = fmt.Fprint(w, xml.Header)
 	enc := xml.NewEncoder(w)
 	enc.Indent("", "  ")
-	_ = enc.Encode(v)
+	if err := enc.Encode(v); err != nil {
+		slog.Warn("failed to encode XML response", "err", err)
+	}
 }
 
 // ErrorResponse is the standard AWS error response.

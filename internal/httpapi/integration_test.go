@@ -41,6 +41,7 @@ func newIntegrationSetup(t *testing.T) (*awssqs.Client, *httptest.Server, *sqs.E
 }
 
 func newIntegrationClient(t *testing.T) (*awssqs.Client, *httptest.Server) {
+	t.Helper()
 	client, ts, _ := newIntegrationSetup(t)
 	return client, ts
 }
@@ -548,10 +549,11 @@ func TestIntegration_DLQ_MessageMovedAfterMaxReceiveCount(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set RedrivePolicy on source queue
-	rpJSON, _ := json.Marshal(map[string]any{
+	rpJSON, err := json.Marshal(map[string]any{
 		"deadLetterTargetArn": dlqARN,
 		"maxReceiveCount":     3,
 	})
+	require.NoError(t, err)
 	_, err = client.SetQueueAttributes(ctx, &awssqs.SetQueueAttributesInput{
 		QueueUrl: sourceOut.QueueUrl,
 		Attributes: map[string]string{
@@ -612,10 +614,11 @@ func TestIntegration_DLQ_RedrivePolicy_InvalidDLQ(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	rpJSON, _ := json.Marshal(map[string]any{
+	rpJSON, err := json.Marshal(map[string]any{
 		"deadLetterTargetArn": "arn:aws:sqs:eu-central-1:000000000000:nonexistent",
 		"maxReceiveCount":     3,
 	})
+	require.NoError(t, err)
 
 	_, err = client.SetQueueAttributes(ctx, &awssqs.SetQueueAttributesInput{
 		QueueUrl: createOut.QueueUrl,
@@ -650,10 +653,11 @@ func TestIntegration_DLQ_GetRedrivePolicy(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	rpJSON, _ := json.Marshal(map[string]any{
+	rpJSON, err := json.Marshal(map[string]any{
 		"deadLetterTargetArn": dlqARN,
 		"maxReceiveCount":     5,
 	})
+	require.NoError(t, err)
 	_, err = client.SetQueueAttributes(ctx, &awssqs.SetQueueAttributesInput{
 		QueueUrl: sourceOut.QueueUrl,
 		Attributes: map[string]string{
@@ -910,7 +914,7 @@ func TestIntegration_SendMessageBatch_10Messages(t *testing.T) {
 	assert.Empty(t, batchOut.Failed)
 
 	// Receive all 10 (may take multiple receives due to max 10 per call)
-	var allReceived []sqstypes.Message
+	allReceived := make([]sqstypes.Message, 0, 10)
 	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
 		QueueUrl:            queueURL,
 		MaxNumberOfMessages: 10,

@@ -1,7 +1,7 @@
 package sqs
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // MD5 is required by the SQS protocol for message body checksums
 	"encoding/hex"
 	"errors"
 )
@@ -17,6 +17,6 @@ var (
 )
 
 func md5Hash(s string) string {
-	h := md5.Sum([]byte(s))
+	h := md5.Sum([]byte(s)) //nolint:gosec // required by SQS protocol
 	return hex.EncodeToString(h[:])
 }

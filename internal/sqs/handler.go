@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -106,20 +107,24 @@ func jsonInt(raw map[string]json.RawMessage, key string) (int, bool) {
 	return n, true
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/x-amz-json-1.0")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Warn("failed to encode JSON response", "err", err)
+	}
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/x-amz-json-1.0")
 	w.Header().Set("x-amzn-query-error", code+";Sender")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"__type":  code,
 		"Message": message,
-	})
+	}); err != nil {
+		slog.Warn("failed to encode JSON error response", "err", err)
+	}
 }
 
 func writeJSONQueueError(w http.ResponseWriter, err error) {
@@ -169,7 +174,7 @@ func (h *Handler) createQueueJSON(w http.ResponseWriter, raw map[string]json.Raw
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"QueueUrl": q.URL})
+	writeJSON(w, map[string]string{"QueueUrl": q.URL})
 }
 
 func (h *Handler) getQueueURLJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
@@ -185,7 +190,7 @@ func (h *Handler) getQueueURLJSON(w http.ResponseWriter, raw map[string]json.Raw
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"QueueUrl": url})
+	writeJSON(w, map[string]string{"QueueUrl": url})
 }
 
 func jsonStringSlice(raw map[string]json.RawMessage, key string) []string {
@@ -233,7 +238,7 @@ func (h *Handler) getQueueAttributesJSON(w http.ResponseWriter, raw map[string]j
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"Attributes": attrs})
+	writeJSON(w, map[string]any{"Attributes": attrs})
 }
 
 func (h *Handler) setQueueAttributesJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
@@ -258,7 +263,7 @@ func (h *Handler) setQueueAttributesJSON(w http.ResponseWriter, raw map[string]j
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{})
+	writeJSON(w, map[string]any{})
 }
 
 func queueNameFromURL(queueURL string) string {
@@ -301,7 +306,7 @@ func (h *Handler) sendMessageJSON(w http.ResponseWriter, raw map[string]json.Raw
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
+	writeJSON(w, map[string]string{
 		"MessageId":        msg.MessageID,
 		"MD5OfMessageBody": msg.MD5OfBody,
 	})
@@ -391,7 +396,7 @@ func (h *Handler) receiveMessageJSON(w http.ResponseWriter, r *http.Request, raw
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"Messages": messages})
+	writeJSON(w, map[string]any{"Messages": messages})
 }
 
 func (h *Handler) deleteMessageJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
@@ -416,7 +421,7 @@ func (h *Handler) deleteMessageJSON(w http.ResponseWriter, raw map[string]json.R
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{})
+	writeJSON(w, map[string]any{})
 }
 
 // --- Query protocol (form-encoded + XML, used by PHP/older SDKs) ---
@@ -882,15 +887,15 @@ func (h *Handler) sendMessageBatchJSON(w http.ResponseWriter, raw map[string]jso
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, map[string]any{
 		"Successful": successful,
 		"Failed":     failed,
 	})
 }
 
 type sendMessageBatchXMLResponse struct {
-	XMLName  xml.Name                    `xml:"SendMessageBatchResponse"`
-	Result   sendMessageBatchXMLResult   `xml:"SendMessageBatchResult"`
+	XMLName  xml.Name                  `xml:"SendMessageBatchResponse"`
+	Result   sendMessageBatchXMLResult `xml:"SendMessageBatchResult"`
 	Metadata query.ResponseMetadata
 }
 
@@ -1028,15 +1033,15 @@ func (h *Handler) deleteMessageBatchJSON(w http.ResponseWriter, raw map[string]j
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, map[string]any{
 		"Successful": successful,
 		"Failed":     failed,
 	})
 }
 
 type deleteMessageBatchXMLResponse struct {
-	XMLName  xml.Name                      `xml:"DeleteMessageBatchResponse"`
-	Result   deleteMessageBatchXMLResult   `xml:"DeleteMessageBatchResult"`
+	XMLName  xml.Name                    `xml:"DeleteMessageBatchResponse"`
+	Result   deleteMessageBatchXMLResult `xml:"DeleteMessageBatchResult"`
 	Metadata query.ResponseMetadata
 }
 
@@ -1108,7 +1113,7 @@ func (h *Handler) purgeQueueJSON(w http.ResponseWriter, raw map[string]json.RawM
 		writeJSONQueueError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{})
+	writeJSON(w, map[string]any{})
 }
 
 type purgeQueueXMLResponse struct {
