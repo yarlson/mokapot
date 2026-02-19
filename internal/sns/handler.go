@@ -60,6 +60,10 @@ func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		h.subscribeJSON(w, raw)
 	case "Publish":
 		h.publishJSON(w, raw)
+	case "SetSubscriptionAttributes":
+		h.setSubscriptionAttributesJSON(w, raw)
+	case "GetSubscriptionAttributes":
+		h.getSubscriptionAttributesJSON(w, raw)
 	default:
 		if IsSNSAction(action) {
 			writeJSONError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not yet implemented.")
@@ -103,6 +107,8 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 
 func writeSNSJSONError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrSubscriptionNotFound):
+		writeJSONError(w, http.StatusNotFound, "NotFound", "Subscription does not exist.")
 	case errors.Is(err, ErrTopicNotFound):
 		writeJSONError(w, http.StatusNotFound, "NotFound", "Topic does not exist.")
 	case errors.Is(err, ErrInvalidParameter):
@@ -176,6 +182,46 @@ func (h *Handler) publishJSON(w http.ResponseWriter, raw map[string]json.RawMess
 	writeJSON(w, map[string]string{"MessageId": result.MessageID})
 }
 
+func (h *Handler) setSubscriptionAttributesJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
+	subARN := jsonString(raw, "SubscriptionArn")
+	attrName := jsonString(raw, "AttributeName")
+	attrValue := jsonString(raw, "AttributeValue")
+
+	if subARN == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameter", "SubscriptionArn is required.")
+		return
+	}
+	if attrName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameter", "AttributeName is required.")
+		return
+	}
+
+	err := h.engine.SetSubscriptionAttributes(subARN, attrName, attrValue)
+	if err != nil {
+		writeSNSJSONError(w, err)
+		return
+	}
+
+	writeJSON(w, map[string]any{})
+}
+
+func (h *Handler) getSubscriptionAttributesJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
+	subARN := jsonString(raw, "SubscriptionArn")
+
+	if subARN == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameter", "SubscriptionArn is required.")
+		return
+	}
+
+	attrs, err := h.engine.GetSubscriptionAttributes(subARN)
+	if err != nil {
+		writeSNSJSONError(w, err)
+		return
+	}
+
+	writeJSON(w, map[string]any{"Attributes": attrs})
+}
+
 // --- Query protocol (form-encoded + XML) ---
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +240,10 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		h.subscribeXML(w, params)
 	case "Publish":
 		h.publishXML(w, params)
+	case "SetSubscriptionAttributes":
+		h.setSubscriptionAttributesXML(w, params)
+	case "GetSubscriptionAttributes":
+		h.getSubscriptionAttributesXML(w, params)
 	default:
 		if IsSNSAction(action) {
 			query.WriteError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not yet implemented.")
@@ -298,8 +348,80 @@ func (h *Handler) publishXML(w http.ResponseWriter, params query.Params) {
 	})
 }
 
+type setSubscriptionAttributesXMLResponse struct {
+	XMLName  xml.Name `xml:"SetSubscriptionAttributesResponse"`
+	Metadata query.ResponseMetadata
+}
+
+func (h *Handler) setSubscriptionAttributesXML(w http.ResponseWriter, params query.Params) {
+	subARN := params.Get("SubscriptionArn")
+	attrName := params.Get("AttributeName")
+	attrValue := params.Get("AttributeValue")
+
+	if subARN == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameter", "SubscriptionArn is required.")
+		return
+	}
+	if attrName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameter", "AttributeName is required.")
+		return
+	}
+
+	err := h.engine.SetSubscriptionAttributes(subARN, attrName, attrValue)
+	if err != nil {
+		writeSNSErrorXML(w, err)
+		return
+	}
+
+	query.WriteXML(w, http.StatusOK, setSubscriptionAttributesXMLResponse{
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+type getSubscriptionAttributesXMLResponse struct {
+	XMLName  xml.Name                           `xml:"GetSubscriptionAttributesResponse"`
+	Result   getSubscriptionAttributesXMLResult `xml:"GetSubscriptionAttributesResult"`
+	Metadata query.ResponseMetadata
+}
+
+type getSubscriptionAttributesXMLResult struct {
+	Attributes []xmlSubscriptionAttribute `xml:"Attributes>entry,omitempty"`
+}
+
+type xmlSubscriptionAttribute struct {
+	Key   string `xml:"key"`
+	Value string `xml:"value"`
+}
+
+func (h *Handler) getSubscriptionAttributesXML(w http.ResponseWriter, params query.Params) {
+	subARN := params.Get("SubscriptionArn")
+
+	if subARN == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameter", "SubscriptionArn is required.")
+		return
+	}
+
+	attrs, err := h.engine.GetSubscriptionAttributes(subARN)
+	if err != nil {
+		writeSNSErrorXML(w, err)
+		return
+	}
+
+	var xmlAttrs []xmlSubscriptionAttribute
+	for k, v := range attrs {
+		xmlAttrs = append(xmlAttrs, xmlSubscriptionAttribute{Key: k, Value: v})
+	}
+
+	query.WriteXML(w, http.StatusOK, getSubscriptionAttributesXMLResponse{
+		Result:   getSubscriptionAttributesXMLResult{Attributes: xmlAttrs},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
 func writeSNSErrorXML(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrSubscriptionNotFound):
+		query.WriteError(w, http.StatusNotFound, "NotFound", "Subscription does not exist.")
 	case errors.Is(err, ErrTopicNotFound):
 		query.WriteError(w, http.StatusNotFound, "NotFound", "Topic does not exist.")
 	case errors.Is(err, ErrInvalidParameter):

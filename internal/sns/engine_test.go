@@ -220,3 +220,206 @@ func TestPublish_DeliveryFailureSilent(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.MessageID)
 }
+
+// --- RawMessageDelivery tests ---
+
+func TestPublish_RawMessageDelivery(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("raw-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:raw-queue")
+	require.NoError(t, err)
+
+	// Enable raw delivery
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "RawMessageDelivery", "true")
+	require.NoError(t, err)
+
+	_, err = e.Publish(topic.ARN, "raw body content", "")
+	require.NoError(t, err)
+
+	require.Len(t, rec.deliveries, 1)
+	assert.Equal(t, "raw-queue", rec.deliveries[0].QueueName)
+	// Body should be the raw message, NOT an SNS envelope
+	assert.Equal(t, "raw body content", rec.deliveries[0].Body)
+
+	// Verify it's NOT JSON-parseable as an SNS envelope
+	var envelope map[string]string
+	err = json.Unmarshal([]byte(rec.deliveries[0].Body), &envelope)
+	assert.Error(t, err, "raw body should not be a JSON envelope")
+}
+
+func TestPublish_MixedRawAndEnvelope(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("mixed-topic")
+	require.NoError(t, err)
+
+	// Subscribe two queues: one raw, one envelope
+	rawSub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:raw-queue")
+	require.NoError(t, err)
+
+	_, err = e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:envelope-queue")
+	require.NoError(t, err)
+
+	// Enable raw delivery on only the first subscription
+	err = e.SetSubscriptionAttributes(rawSub.SubscriptionARN, "RawMessageDelivery", "true")
+	require.NoError(t, err)
+
+	_, err = e.Publish(topic.ARN, "test message", "")
+	require.NoError(t, err)
+
+	require.Len(t, rec.deliveries, 2)
+
+	// Find which delivery is raw vs envelope
+	var rawBody, envelopeBody string
+	for _, d := range rec.deliveries {
+		if d.QueueName == "raw-queue" {
+			rawBody = d.Body
+		} else {
+			envelopeBody = d.Body
+		}
+	}
+
+	// Raw queue gets plain message
+	assert.Equal(t, "test message", rawBody)
+
+	// Envelope queue gets SNS JSON envelope
+	var envelope map[string]string
+	err = json.Unmarshal([]byte(envelopeBody), &envelope)
+	require.NoError(t, err)
+	assert.Equal(t, "Notification", envelope["Type"])
+	assert.Equal(t, "test message", envelope["Message"])
+}
+
+func TestPublish_RawDeliveryDisabled(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("disabled-raw-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	// Explicitly set to false
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "RawMessageDelivery", "false")
+	require.NoError(t, err)
+
+	_, err = e.Publish(topic.ARN, "envelope message", "")
+	require.NoError(t, err)
+
+	require.Len(t, rec.deliveries, 1)
+
+	// Should be an SNS envelope
+	var envelope map[string]string
+	err = json.Unmarshal([]byte(rec.deliveries[0].Body), &envelope)
+	require.NoError(t, err)
+	assert.Equal(t, "Notification", envelope["Type"])
+	assert.Equal(t, "envelope message", envelope["Message"])
+}
+
+// --- SetSubscriptionAttributes tests ---
+
+func TestSetSubscriptionAttributes_RawMessageDelivery(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("attr-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "RawMessageDelivery", "true")
+	require.NoError(t, err)
+
+	attrs, err := e.GetSubscriptionAttributes(sub.SubscriptionARN)
+	require.NoError(t, err)
+	assert.Equal(t, "true", attrs["RawMessageDelivery"])
+}
+
+func TestSetSubscriptionAttributes_InvalidRawMessageDeliveryValue(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("invalid-val-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "RawMessageDelivery", "yes")
+	assert.ErrorIs(t, err, sns.ErrInvalidParameterValue)
+}
+
+func TestSetSubscriptionAttributes_SubscriptionNotFound(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	err := e.SetSubscriptionAttributes("arn:aws:sns:eu-central-1:000000000000:topic:nonexistent", "RawMessageDelivery", "true")
+	assert.ErrorIs(t, err, sns.ErrSubscriptionNotFound)
+}
+
+func TestSetSubscriptionAttributes_EmptySubscriptionARN(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	err := e.SetSubscriptionAttributes("", "RawMessageDelivery", "true")
+	assert.ErrorIs(t, err, sns.ErrInvalidParameter)
+}
+
+func TestSetSubscriptionAttributes_EmptyAttributeName(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("t")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "", "value")
+	assert.ErrorIs(t, err, sns.ErrInvalidParameter)
+}
+
+// --- GetSubscriptionAttributes tests ---
+
+func TestGetSubscriptionAttributes_DefaultValues(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("get-attr-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:my-queue")
+	require.NoError(t, err)
+
+	attrs, err := e.GetSubscriptionAttributes(sub.SubscriptionARN)
+	require.NoError(t, err)
+
+	assert.Equal(t, sub.SubscriptionARN, attrs["SubscriptionArn"])
+	assert.Equal(t, topic.ARN, attrs["TopicArn"])
+	assert.Equal(t, "sqs", attrs["Protocol"])
+	assert.Equal(t, "arn:aws:sqs:eu-central-1:000000000000:my-queue", attrs["Endpoint"])
+	assert.Equal(t, "false", attrs["RawMessageDelivery"])
+}
+
+func TestGetSubscriptionAttributes_SubscriptionNotFound(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	_, err := e.GetSubscriptionAttributes("arn:aws:sns:eu-central-1:000000000000:topic:nonexistent")
+	assert.ErrorIs(t, err, sns.ErrSubscriptionNotFound)
+}
+
+func TestGetSubscriptionAttributes_EmptyARN(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	_, err := e.GetSubscriptionAttributes("")
+	assert.ErrorIs(t, err, sns.ErrInvalidParameter)
+}

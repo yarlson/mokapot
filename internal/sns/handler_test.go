@@ -1,6 +1,7 @@
 package sns_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -170,6 +171,117 @@ func TestIsSNSAction(t *testing.T) {
 	}
 }
 
+// --- Golden response shape: SetSubscriptionAttributes ---
+
+func TestXML_SetSubscriptionAttributes_Shape(t *testing.T) {
+	h := newTestHandler()
+
+	// Create topic and subscribe
+	postSNSQuery(h, "Action=CreateTopic&Name=ssa-topic")
+	subRec := postSNSQuery(h, "Action=Subscribe"+
+		"&TopicArn=arn:aws:sns:eu-central-1:000000000000:ssa-topic"+
+		"&Protocol=sqs"+
+		"&Endpoint=arn:aws:sqs:eu-central-1:000000000000:q")
+	require.Equal(t, http.StatusOK, subRec.Code)
+
+	// Extract subscription ARN from response
+	subBody := subRec.Body.String()
+	subARN := extractXMLValue(subBody, "SubscriptionArn")
+	require.NotEmpty(t, subARN)
+
+	rec := postSNSQuery(h, "Action=SetSubscriptionAttributes"+
+		"&SubscriptionArn="+subARN+
+		"&AttributeName=RawMessageDelivery"+
+		"&AttributeValue=true")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<SetSubscriptionAttributesResponse>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_SetSubscriptionAttributes_SubscriptionNotFound(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postSNSQuery(h, "Action=SetSubscriptionAttributes"+
+		"&SubscriptionArn=arn:aws:sns:eu-central-1:000000000000:topic:nonexistent"+
+		"&AttributeName=RawMessageDelivery"+
+		"&AttributeValue=true")
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>NotFound</Code>")
+}
+
+func TestXML_SetSubscriptionAttributes_MissingSubscriptionArn(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postSNSQuery(h, "Action=SetSubscriptionAttributes"+
+		"&AttributeName=RawMessageDelivery"+
+		"&AttributeValue=true")
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>InvalidParameter</Code>")
+}
+
+// --- Golden response shape: GetSubscriptionAttributes ---
+
+func TestXML_GetSubscriptionAttributes_Shape(t *testing.T) {
+	h := newTestHandler()
+
+	// Create topic and subscribe
+	postSNSQuery(h, "Action=CreateTopic&Name=gsa-topic")
+	subRec := postSNSQuery(h, "Action=Subscribe"+
+		"&TopicArn=arn:aws:sns:eu-central-1:000000000000:gsa-topic"+
+		"&Protocol=sqs"+
+		"&Endpoint=arn:aws:sqs:eu-central-1:000000000000:q")
+	require.Equal(t, http.StatusOK, subRec.Code)
+
+	subARN := extractXMLValue(subRec.Body.String(), "SubscriptionArn")
+	require.NotEmpty(t, subARN)
+
+	rec := postSNSQuery(h, "Action=GetSubscriptionAttributes"+
+		"&SubscriptionArn="+subARN)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<GetSubscriptionAttributesResponse>")
+	assert.Contains(t, body, "<GetSubscriptionAttributesResult>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+	assert.Contains(t, body, "RawMessageDelivery")
+}
+
+func TestXML_GetSubscriptionAttributes_SubscriptionNotFound(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postSNSQuery(h, "Action=GetSubscriptionAttributes"+
+		"&SubscriptionArn=arn:aws:sns:eu-central-1:000000000000:topic:nonexistent")
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>NotFound</Code>")
+}
+
+// extractXMLValue extracts the text content between XML tags.
+func extractXMLValue(body, tag string) string {
+	start := strings.Index(body, "<"+tag+">")
+	if start < 0 {
+		return ""
+	}
+	start += len("<" + tag + ">")
+	end := strings.Index(body[start:], "</"+tag+">")
+	if end < 0 {
+		return ""
+	}
+	return body[start : start+end]
+}
+
 // --- JSON protocol tests ---
 
 func postSNSJSON(handler *sns.Handler, target, body string) *httptest.ResponseRecorder {
@@ -218,4 +330,58 @@ func TestJSON_Publish(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
 	assert.Contains(t, body, "MessageId")
+}
+
+func TestJSON_SetSubscriptionAttributes(t *testing.T) {
+	h := newTestHandler()
+	postSNSJSON(h, "SNS.CreateTopic", `{"Name":"json-ssa-topic"}`)
+
+	subRec := postSNSJSON(h, "SNS.Subscribe", `{
+		"TopicArn":"arn:aws:sns:eu-central-1:000000000000:json-ssa-topic",
+		"Protocol":"sqs",
+		"Endpoint":"arn:aws:sqs:eu-central-1:000000000000:q"
+	}`)
+	require.Equal(t, http.StatusOK, subRec.Code)
+
+	var subResp map[string]string
+	err := json.Unmarshal(subRec.Body.Bytes(), &subResp)
+	require.NoError(t, err)
+	subARN := subResp["SubscriptionArn"]
+	require.NotEmpty(t, subARN)
+
+	rec := postSNSJSON(h, "SNS.SetSubscriptionAttributes", `{
+		"SubscriptionArn":"`+subARN+`",
+		"AttributeName":"RawMessageDelivery",
+		"AttributeValue":"true"
+	}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestJSON_GetSubscriptionAttributes(t *testing.T) {
+	h := newTestHandler()
+	postSNSJSON(h, "SNS.CreateTopic", `{"Name":"json-gsa-topic"}`)
+
+	subRec := postSNSJSON(h, "SNS.Subscribe", `{
+		"TopicArn":"arn:aws:sns:eu-central-1:000000000000:json-gsa-topic",
+		"Protocol":"sqs",
+		"Endpoint":"arn:aws:sqs:eu-central-1:000000000000:q"
+	}`)
+	require.Equal(t, http.StatusOK, subRec.Code)
+
+	var subResp map[string]string
+	err := json.Unmarshal(subRec.Body.Bytes(), &subResp)
+	require.NoError(t, err)
+	subARN := subResp["SubscriptionArn"]
+	require.NotEmpty(t, subARN)
+
+	rec := postSNSJSON(h, "SNS.GetSubscriptionAttributes", `{
+		"SubscriptionArn":"`+subARN+`"
+	}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Attributes")
+	assert.Contains(t, body, "RawMessageDelivery")
+	assert.Contains(t, body, "Protocol")
 }

@@ -31,14 +31,17 @@ type Subscription struct {
 	TopicARN        string
 	Protocol        string // "sqs" only
 	Endpoint        string // queue ARN
-	Attributes      map[string]string
+
+	mu         sync.RWMutex
+	Attributes map[string]string
 }
 
 // Engine manages all SNS topics and subscriptions in memory.
 type Engine struct {
-	mu          sync.RWMutex
-	topics      map[string]*Topic // topicName -> Topic
-	topicsByARN map[string]*Topic // topicARN -> Topic
+	mu                 sync.RWMutex
+	topics             map[string]*Topic        // topicName -> Topic
+	topicsByARN        map[string]*Topic        // topicARN -> Topic
+	subscriptionsByARN map[string]*Subscription // subscriptionARN -> Subscription
 
 	region    string
 	accountID string
@@ -49,12 +52,13 @@ type Engine struct {
 // NewEngine creates a new SNS engine.
 func NewEngine(region, accountID string, enqueue EnqueueFunc) *Engine {
 	return &Engine{
-		topics:      make(map[string]*Topic),
-		topicsByARN: make(map[string]*Topic),
-		region:      region,
-		accountID:   accountID,
-		enqueue:     enqueue,
-		now:         time.Now,
+		topics:             make(map[string]*Topic),
+		topicsByARN:        make(map[string]*Topic),
+		subscriptionsByARN: make(map[string]*Subscription),
+		region:             region,
+		accountID:          accountID,
+		enqueue:            enqueue,
+		now:                time.Now,
 	}
 }
 
@@ -105,10 +109,11 @@ func (e *Engine) Subscribe(topicARN, protocol, endpoint string) (*Subscription, 
 		return nil, fmt.Errorf("%w: Endpoint is required", ErrInvalidParameter)
 	}
 
-	e.mu.RLock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	topic := e.topicByARN(topicARN)
 	if topic == nil {
-		e.mu.RUnlock()
 		return nil, ErrTopicNotFound
 	}
 
@@ -123,7 +128,8 @@ func (e *Engine) Subscribe(topicARN, protocol, endpoint string) (*Subscription, 
 	topic.mu.Lock()
 	topic.Subscriptions = append(topic.Subscriptions, sub)
 	topic.mu.Unlock()
-	e.mu.RUnlock()
+
+	e.subscriptionsByARN[sub.SubscriptionARN] = sub
 
 	return sub, nil
 }
@@ -170,7 +176,16 @@ func (e *Engine) Publish(topicARN, message, subject string) (*PublishResult, err
 			continue
 		}
 
-		if err := e.enqueue(queueName, envelope); err != nil {
+		sub.mu.RLock()
+		raw := strings.EqualFold(sub.Attributes["RawMessageDelivery"], "true")
+		sub.mu.RUnlock()
+
+		body := envelope
+		if raw {
+			body = message
+		}
+
+		if err := e.enqueue(queueName, body); err != nil {
 			slog.Warn("failed to deliver SNS message to SQS queue", "queue", queueName, "topicArn", topicARN, "err", err)
 			continue
 		}
@@ -205,6 +220,76 @@ func buildSNSEnvelope(messageID, topicARN, subject, message string, timestamp ti
 		return message
 	}
 	return string(data)
+}
+
+// SetSubscriptionAttributes sets a single attribute on a subscription.
+func (e *Engine) SetSubscriptionAttributes(subscriptionARN, attrName, attrValue string) error {
+	if subscriptionARN == "" {
+		return fmt.Errorf("%w: SubscriptionArn is required", ErrInvalidParameter)
+	}
+	if attrName == "" {
+		return fmt.Errorf("%w: AttributeName is required", ErrInvalidParameter)
+	}
+
+	e.mu.RLock()
+	sub := e.subscriptionsByARN[subscriptionARN]
+	e.mu.RUnlock()
+
+	if sub == nil {
+		return ErrSubscriptionNotFound
+	}
+
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+
+	switch attrName {
+	case "RawMessageDelivery":
+		lower := strings.ToLower(attrValue)
+		if lower != "true" && lower != "false" {
+			return fmt.Errorf("%w: Invalid value for RawMessageDelivery. Must be true or false", ErrInvalidParameterValue)
+		}
+		sub.Attributes[attrName] = lower
+	default:
+		sub.Attributes[attrName] = attrValue
+	}
+
+	return nil
+}
+
+// GetSubscriptionAttributes returns the attributes for a subscription.
+func (e *Engine) GetSubscriptionAttributes(subscriptionARN string) (map[string]string, error) {
+	if subscriptionARN == "" {
+		return nil, fmt.Errorf("%w: SubscriptionArn is required", ErrInvalidParameter)
+	}
+
+	e.mu.RLock()
+	sub := e.subscriptionsByARN[subscriptionARN]
+	e.mu.RUnlock()
+
+	if sub == nil {
+		return nil, ErrSubscriptionNotFound
+	}
+
+	sub.mu.RLock()
+	attrs := map[string]string{
+		"SubscriptionArn":    sub.SubscriptionARN,
+		"TopicArn":           sub.TopicARN,
+		"Protocol":           sub.Protocol,
+		"Endpoint":           sub.Endpoint,
+		"RawMessageDelivery": sub.Attributes["RawMessageDelivery"],
+	}
+	if attrs["RawMessageDelivery"] == "" {
+		attrs["RawMessageDelivery"] = "false"
+	}
+
+	for k, v := range sub.Attributes {
+		if _, exists := attrs[k]; !exists {
+			attrs[k] = v
+		}
+	}
+	sub.mu.RUnlock()
+
+	return attrs, nil
 }
 
 // queueNameFromARN extracts the queue name from an SQS queue ARN.

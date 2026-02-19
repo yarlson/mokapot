@@ -1390,3 +1390,229 @@ func TestIntegration_SNS_SubscribeTopicNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "NotFound")
 }
+
+// --- SNS Raw Message Delivery integration tests ---
+
+func TestIntegration_SNS_RawMessageDelivery(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("raw-topic"),
+	})
+	require.NoError(t, err)
+
+	// Create SQS queue
+	queueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("raw-queue"),
+	})
+	require.NoError(t, err)
+
+	// Get queue ARN
+	attrOut, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queueARN := attrOut.Attributes["QueueArn"]
+
+	// Subscribe with raw delivery
+	subOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+
+	// Enable RawMessageDelivery
+	_, err = s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+		AttributeName:   aws.String("RawMessageDelivery"),
+		AttributeValue:  aws.String("true"),
+	})
+	require.NoError(t, err)
+
+	// Publish a message
+	_, err = s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("raw body"),
+	})
+	require.NoError(t, err)
+
+	// Receive from SQS
+	recvOut, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+
+	// Body should be the raw message, not wrapped in SNS envelope
+	assert.Equal(t, "raw body", *recvOut.Messages[0].Body)
+}
+
+func TestIntegration_SNS_EnvelopeVsRawDelivery(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("mixed-delivery-topic"),
+	})
+	require.NoError(t, err)
+
+	// Create two SQS queues: one for raw, one for envelope
+	rawQueueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("raw-sub-queue"),
+	})
+	require.NoError(t, err)
+
+	envelopeQueueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("envelope-sub-queue"),
+	})
+	require.NoError(t, err)
+
+	// Get queue ARNs
+	rawAttr, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       rawQueueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	rawQueueARN := rawAttr.Attributes["QueueArn"]
+
+	envAttr, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       envelopeQueueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	envQueueARN := envAttr.Attributes["QueueArn"]
+
+	// Subscribe both queues
+	rawSubOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(rawQueueARN),
+	})
+	require.NoError(t, err)
+
+	_, err = s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(envQueueARN),
+	})
+	require.NoError(t, err)
+
+	// Enable RawMessageDelivery on raw subscription only
+	_, err = s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: rawSubOut.SubscriptionArn,
+		AttributeName:   aws.String("RawMessageDelivery"),
+		AttributeValue:  aws.String("true"),
+	})
+	require.NoError(t, err)
+
+	// Publish a message
+	pubOut, err := s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("test payload"),
+	})
+	require.NoError(t, err)
+
+	// Raw queue should receive plain body
+	rawRecv, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            rawQueueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, rawRecv.Messages, 1)
+	assert.Equal(t, "test payload", *rawRecv.Messages[0].Body)
+
+	// Envelope queue should receive SNS JSON envelope
+	envRecv, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            envelopeQueueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, envRecv.Messages, 1)
+
+	var envelope map[string]string
+	err = json.Unmarshal([]byte(*envRecv.Messages[0].Body), &envelope)
+	require.NoError(t, err)
+	assert.Equal(t, "Notification", envelope["Type"])
+	assert.Equal(t, *pubOut.MessageId, envelope["MessageId"])
+	assert.Equal(t, "test payload", envelope["Message"])
+}
+
+func TestIntegration_SNS_GetSubscriptionAttributes(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("get-sub-attr-topic"),
+	})
+	require.NoError(t, err)
+
+	// Create SQS queue
+	queueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("get-sub-attr-queue"),
+	})
+	require.NoError(t, err)
+
+	attrOut, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queueARN := attrOut.Attributes["QueueArn"]
+
+	// Subscribe
+	subOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+
+	// Get subscription attributes — default
+	gsaOut, err := s.snsClient.GetSubscriptionAttributes(ctx, &awssns.GetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "false", gsaOut.Attributes["RawMessageDelivery"])
+	assert.Equal(t, "sqs", gsaOut.Attributes["Protocol"])
+	assert.Equal(t, queueARN, gsaOut.Attributes["Endpoint"])
+	assert.Equal(t, *topicOut.TopicArn, gsaOut.Attributes["TopicArn"])
+
+	// Set RawMessageDelivery to true
+	_, err = s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+		AttributeName:   aws.String("RawMessageDelivery"),
+		AttributeValue:  aws.String("true"),
+	})
+	require.NoError(t, err)
+
+	// Get again — should reflect the change
+	gsaOut, err = s.snsClient.GetSubscriptionAttributes(ctx, &awssns.GetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "true", gsaOut.Attributes["RawMessageDelivery"])
+}
+
+func TestIntegration_SNS_SetSubscriptionAttributes_NotFound(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	_, err := s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: aws.String("arn:aws:sns:eu-central-1:000000000000:topic:nonexistent"),
+		AttributeName:   aws.String("RawMessageDelivery"),
+		AttributeValue:  aws.String("true"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "NotFound")
+}
