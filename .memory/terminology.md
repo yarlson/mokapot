@@ -36,6 +36,8 @@
 
 **PurgeQueue** — removes all messages (available, inflight, delayed) from a queue; AWS enforces a 60-second cooldown between purges (PurgeQueueInProgress error)
 
+**ChangeMessageVisibility** — SQS action that updates the visibility timeout of an inflight message; valid range 0–43200s; setting to 0 releases the message immediately (nack pattern)
+
 **Subscription ARN** — `{topicARN}:{uuid}` — uniquely identifies an SNS subscription; used as key in `subscriptionsByARN` index
 
 **EnqueueFunc** — `func(queueName, body string) error` callback injected into the SNS engine for delivering messages to SQS without a direct package dependency

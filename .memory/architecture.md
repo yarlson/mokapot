@@ -42,6 +42,8 @@ Query Parser (internal/query/query.go)
   │     │ — dead-letter queue: RedrivePolicy on source queue; messages exceeding maxReceiveCount moved to DLQ during receive
   │     │ — batch operations: SendMessageBatch/DeleteMessageBatch with partial failure, per-entry error isolation
   │     │ — PurgeQueue: clears all available and inflight messages; 60-second cooldown (PurgeQueueInProgress)
+  │     │ — ChangeMessageVisibility: update visibility timeout of inflight message; 0 releases immediately and wakes long pollers
+  │     │ — ChangeMessageVisibilityBatch: batch variant (up to 10) with partial failure
   │     │ — Get/SetQueueAttributes: mutable attribute whitelist, numeric range validation, RedrivePolicy DLQ existence check
   │     │ — receipt handle regeneration + ReceiveCount tracking
   │     │ — injectable clock (now func() time.Time)
@@ -89,7 +91,7 @@ Query Parser (internal/query/query.go)
 ├── 3  Visibility timeout ✓ (reappearance + receipt handle invalidation; no ChangeMessageVisibility action yet)
 │   ├── 4  Long polling ✓
 │   ├── 6  Dead-letter queue ✓
-│   └── 12 Change visibility
+│   └── 12 Change visibility ✓
 ├── 5  Delayed messages ✓
 ├── 7  Batch operations ✓ (SendMessageBatch, DeleteMessageBatch)
 ├── 8  Purge queue ✓

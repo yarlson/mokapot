@@ -27,8 +27,9 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 - Queue creation: CreateQueue (idempotent), GetQueueUrl
 - Queue attributes: Get/SetQueueAttributes
 - Message lifecycle: SendMessage, ReceiveMessage, DeleteMessage
-- Batch operations: SendMessageBatch, DeleteMessageBatch (with partial failure, duplicate ID detection, batch size validation)
+- Batch operations: SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch (with partial failure, duplicate ID detection, batch size validation)
 - Visibility timeout with automatic reappearance
+- ChangeMessageVisibility: extend, shorten, or reset (to 0) the visibility timeout of inflight messages; setting to 0 releases immediately and wakes long pollers
 - Long polling (WaitTimeSeconds)
 - Delayed messages (DelaySeconds)
 - Dead-letter queue with RedrivePolicy
@@ -71,10 +72,12 @@ SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, P
 - Dead-letter queue: RedrivePolicy (deadLetterTargetArn + maxReceiveCount); messages exceeding maxReceiveCount are moved to DLQ during ReceiveMessage; DLQ existence validated on SetQueueAttributes
 - Batch operations: SendMessageBatch and DeleteMessageBatch with per-entry error handling, partial failure support, duplicate ID detection, batch size validation (max 10), per-entry DelaySeconds override
 - PurgeQueue: clears all messages (available, inflight, delayed) from a queue; 60-second cooldown enforced (PurgeQueueInProgress); queue remains usable after purge
+- ChangeMessageVisibility: updates visibility timeout of an inflight message (0–43200s); setting to 0 moves message back to available immediately and wakes long pollers; old receipt handle invalidated on release
+- ChangeMessageVisibilityBatch: batch variant (up to 10 entries) with partial failure support, duplicate ID detection, per-entry error isolation
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 
-**Not yet implemented:** DeleteQueue, ListQueues, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish+Get/SetSubscriptionAttributes, persistence
+**Not yet implemented:** DeleteQueue, ListQueues, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish+Get/SetSubscriptionAttributes, persistence
 
 ## Tech Stack
 

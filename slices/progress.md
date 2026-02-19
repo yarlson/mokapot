@@ -9,3 +9,4 @@ SLICE8 done
 SLICE9 done
 SLICE10 done
 SLICE11 done
+SLICE12 done
