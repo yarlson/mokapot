@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -14,7 +15,7 @@ import (
 	"github.com/yarlson/devstack/internal/sqs"
 )
 
-func newIntegrationClient(t *testing.T) (*awssqs.Client, *httptest.Server) {
+func newIntegrationSetup(t *testing.T) (*awssqs.Client, *httptest.Server, *sqs.Engine) {
 	t.Helper()
 
 	// Use a placeholder host; replaced below once the test server starts.
@@ -31,6 +32,11 @@ func newIntegrationClient(t *testing.T) (*awssqs.Client, *httptest.Server) {
 		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
 	})
 
+	return client, ts, engine
+}
+
+func newIntegrationClient(t *testing.T) (*awssqs.Client, *httptest.Server) {
+	client, ts, _ := newIntegrationSetup(t)
 	return client, ts
 }
 
@@ -160,4 +166,91 @@ func TestIntegration_MultipleMessages(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Len(t, recvOut2.Messages, 2)
+}
+
+func TestIntegration_MessageReappearsAfterVisibilityTimeout(t *testing.T) {
+	client, ts, engine := newIntegrationSetup(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	// Use a controllable clock so we don't need time.Sleep.
+	now := time.Now()
+	engine.SetClock(func() time.Time { return now })
+
+	// Create queue
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("visibility-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send a message
+	sendOut, err := client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    queueURL,
+		MessageBody: aws.String("reappearing message"),
+	})
+	require.NoError(t, err)
+	originalMessageID := *sendOut.MessageId
+
+	// Receive with 1-second visibility timeout.
+	// Note: SDK omits VisibilityTimeout=0 from the request body,
+	// so we use 1s and advance the clock past it to test reappearance.
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+		VisibilityTimeout:   1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	assert.Equal(t, "reappearing message", *recvOut.Messages[0].Body)
+	assert.Equal(t, originalMessageID, *recvOut.Messages[0].MessageId)
+	firstHandle := *recvOut.Messages[0].ReceiptHandle
+
+	// Message should be invisible right now (clock hasn't advanced)
+	recvEmpty, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvEmpty.Messages)
+
+	// Advance clock past the 1-second visibility timeout
+	now = now.Add(2 * time.Second)
+	engine.SetClock(func() time.Time { return now })
+
+	// Message should reappear after timeout
+	recvOut2, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+		VisibilityTimeout:   1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut2.Messages, 1)
+
+	// Same message (same ID and body), new receipt handle
+	assert.Equal(t, originalMessageID, *recvOut2.Messages[0].MessageId)
+	assert.Equal(t, "reappearing message", *recvOut2.Messages[0].Body)
+	assert.NotEqual(t, firstHandle, *recvOut2.Messages[0].ReceiptHandle)
+
+	// Old receipt handle should be invalid
+	_, err = client.DeleteMessage(ctx, &awssqs.DeleteMessageInput{
+		QueueUrl:      queueURL,
+		ReceiptHandle: aws.String(firstHandle),
+	})
+	assert.Error(t, err)
+
+	// New receipt handle should work for delete
+	_, err = client.DeleteMessage(ctx, &awssqs.DeleteMessageInput{
+		QueueUrl:      queueURL,
+		ReceiptHandle: recvOut2.Messages[0].ReceiptHandle,
+	})
+	require.NoError(t, err)
+
+	// Message should now be gone
+	recvOut3, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvOut3.Messages)
 }

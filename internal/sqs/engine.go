@@ -46,6 +46,7 @@ type Engine struct {
 	region    string
 	accountID string
 	host      string
+	now       func() time.Time
 }
 
 // NewEngine creates a new SQS engine.
@@ -55,7 +56,16 @@ func NewEngine(region, accountID, host string) *Engine {
 		region:    region,
 		accountID: accountID,
 		host:      host,
+		now:       time.Now,
 	}
+}
+
+// SetClock overrides the time source used by the engine.
+// This is intended for tests that need deterministic time control.
+func (e *Engine) SetClock(fn func() time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.now = fn
 }
 
 // SetHost updates the host used for generating queue URLs.
@@ -84,12 +94,12 @@ func (e *Engine) CreateQueue(name string) (*Queue, error) {
 			"ReceiveMessageWaitTimeSeconds": "0",
 			"DelaySeconds":                  "0",
 			"MessageRetentionPeriod":        "345600",
-			"CreatedTimestamp":              fmt.Sprintf("%d", time.Now().Unix()),
-			"LastModifiedTimestamp":         fmt.Sprintf("%d", time.Now().Unix()),
+			"CreatedTimestamp":              fmt.Sprintf("%d", e.now().Unix()),
+			"LastModifiedTimestamp":         fmt.Sprintf("%d", e.now().Unix()),
 			"QueueArn":                      fmt.Sprintf("arn:aws:sqs:%s:%s:%s", e.region, e.accountID, name),
 		},
 		inflight:  make(map[string]*Message),
-		createdAt: time.Now(),
+		createdAt: e.now(),
 	}
 
 	e.queues[name] = q
@@ -139,7 +149,7 @@ func (e *Engine) SendMessage(queueName, body string) (*Message, error) {
 		MessageID:     uuid.New().String(),
 		Body:          body,
 		MD5OfBody:     md5Hash(body),
-		SentTimestamp: time.Now().UnixMilli(),
+		SentTimestamp: e.now().UnixMilli(),
 	}
 
 	q.mu.Lock()
@@ -166,7 +176,7 @@ func (e *Engine) ReceiveMessage(queueName string, maxMessages int, visibilityTim
 		maxMessages = 10
 	}
 
-	now := time.Now()
+	now := e.now()
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
