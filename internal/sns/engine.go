@@ -32,8 +32,9 @@ type Subscription struct {
 	Protocol        string // "sqs" only
 	Endpoint        string // queue ARN
 
-	mu         sync.RWMutex
-	Attributes map[string]string
+	mu                 sync.RWMutex
+	Attributes         map[string]string
+	cachedFilterPolicy filterPolicy
 }
 
 // Engine manages all SNS topics and subscriptions in memory.
@@ -140,7 +141,7 @@ type PublishResult struct {
 }
 
 // Publish sends a message to all subscribers of a topic.
-func (e *Engine) Publish(topicARN, message, subject string) (*PublishResult, error) {
+func (e *Engine) Publish(topicARN, message, subject string, messageAttributes map[string]MessageAttribute) (*PublishResult, error) {
 	if message == "" {
 		return nil, fmt.Errorf("%w: Message is required", ErrInvalidParameter)
 	}
@@ -162,7 +163,7 @@ func (e *Engine) Publish(topicARN, message, subject string) (*PublishResult, err
 	topic.mu.Unlock()
 	e.mu.RUnlock()
 
-	envelope := buildSNSEnvelope(messageID, topicARN, subject, message, now)
+	envelope := buildSNSEnvelope(messageID, topicARN, subject, message, now, messageAttributes)
 
 	delivered := 0
 	for _, sub := range subs {
@@ -178,7 +179,13 @@ func (e *Engine) Publish(topicARN, message, subject string) (*PublishResult, err
 
 		sub.mu.RLock()
 		raw := strings.EqualFold(sub.Attributes["RawMessageDelivery"], "true")
+		policy := sub.cachedFilterPolicy
 		sub.mu.RUnlock()
+
+		// Apply filter policy
+		if !matchesFilterPolicy(policy, messageAttributes) {
+			continue
+		}
 
 		body := envelope
 		if raw {
@@ -198,8 +205,8 @@ func (e *Engine) Publish(topicARN, message, subject string) (*PublishResult, err
 }
 
 // buildSNSEnvelope creates the standard SNS JSON envelope for non-raw delivery.
-func buildSNSEnvelope(messageID, topicARN, subject, message string, timestamp time.Time) string {
-	envelope := map[string]string{
+func buildSNSEnvelope(messageID, topicARN, subject, message string, timestamp time.Time, messageAttributes map[string]MessageAttribute) string {
+	envelope := map[string]any{
 		"Type":             "Notification",
 		"MessageId":        messageID,
 		"TopicArn":         topicARN,
@@ -212,6 +219,16 @@ func buildSNSEnvelope(messageID, topicARN, subject, message string, timestamp ti
 	}
 	if subject != "" {
 		envelope["Subject"] = subject
+	}
+	if len(messageAttributes) > 0 {
+		attrs := make(map[string]map[string]string, len(messageAttributes))
+		for k, v := range messageAttributes {
+			attrs[k] = map[string]string{
+				"Type":  v.DataType,
+				"Value": v.StringValue,
+			}
+		}
+		envelope["MessageAttributes"] = attrs
 	}
 
 	data, err := json.Marshal(envelope)
@@ -249,6 +266,17 @@ func (e *Engine) SetSubscriptionAttributes(subscriptionARN, attrName, attrValue 
 			return fmt.Errorf("%w: Invalid value for RawMessageDelivery. Must be true or false", ErrInvalidParameterValue)
 		}
 		sub.Attributes[attrName] = lower
+	case "FilterPolicy":
+		var parsed filterPolicy
+		if attrValue != "" {
+			var err error
+			parsed, err = parseFilterPolicy(attrValue)
+			if err != nil {
+				return err
+			}
+		}
+		sub.Attributes[attrName] = attrValue
+		sub.cachedFilterPolicy = parsed
 	default:
 		sub.Attributes[attrName] = attrValue
 	}

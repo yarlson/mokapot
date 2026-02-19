@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -173,13 +174,41 @@ func (h *Handler) publishJSON(w http.ResponseWriter, raw map[string]json.RawMess
 		return
 	}
 
-	result, err := h.engine.Publish(topicARN, message, subject)
+	msgAttrs, err := parseMessageAttributesJSON(raw)
+	if err != nil {
+		writeSNSJSONError(w, err)
+		return
+	}
+
+	result, err := h.engine.Publish(topicARN, message, subject, msgAttrs)
 	if err != nil {
 		writeSNSJSONError(w, err)
 		return
 	}
 
 	writeJSON(w, map[string]string{"MessageId": result.MessageID})
+}
+
+func parseMessageAttributesJSON(raw map[string]json.RawMessage) (map[string]MessageAttribute, error) {
+	v, ok := raw["MessageAttributes"]
+	if !ok {
+		return map[string]MessageAttribute{}, nil
+	}
+	var rawAttrs map[string]struct {
+		DataType    string `json:"DataType"`
+		StringValue string `json:"StringValue"`
+	}
+	if err := json.Unmarshal(v, &rawAttrs); err != nil {
+		return nil, fmt.Errorf("%w: Invalid MessageAttributes: %s", ErrInvalidParameter, err.Error())
+	}
+	attrs := make(map[string]MessageAttribute, len(rawAttrs))
+	for k, a := range rawAttrs {
+		attrs[k] = MessageAttribute{
+			DataType:    a.DataType,
+			StringValue: a.StringValue,
+		}
+	}
+	return attrs, nil
 }
 
 func (h *Handler) setSubscriptionAttributesJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
@@ -336,7 +365,13 @@ func (h *Handler) publishXML(w http.ResponseWriter, params query.Params) {
 		return
 	}
 
-	result, err := h.engine.Publish(topicARN, message, subject)
+	msgAttrs, err := parseMessageAttributesQuery(params)
+	if err != nil {
+		writeSNSErrorXML(w, err)
+		return
+	}
+
+	result, err := h.engine.Publish(topicARN, message, subject, msgAttrs)
 	if err != nil {
 		writeSNSErrorXML(w, err)
 		return
@@ -346,6 +381,29 @@ func (h *Handler) publishXML(w http.ResponseWriter, params query.Params) {
 		Result:   publishXMLResult{MessageID: result.MessageID},
 		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
 	})
+}
+
+func parseMessageAttributesQuery(params query.Params) (map[string]MessageAttribute, error) {
+	var attrs map[string]MessageAttribute
+	for i := 1; ; i++ {
+		name := params.Get(fmt.Sprintf("MessageAttributes.entry.%d.Name", i))
+		if name == "" {
+			break
+		}
+		dataType := params.Get(fmt.Sprintf("MessageAttributes.entry.%d.Value.DataType", i))
+		if dataType == "" {
+			return nil, fmt.Errorf("%w: DataType is required for MessageAttribute '%s'", ErrInvalidParameter, name)
+		}
+		if attrs == nil {
+			attrs = make(map[string]MessageAttribute)
+		}
+		stringValue := params.Get(fmt.Sprintf("MessageAttributes.entry.%d.Value.StringValue", i))
+		attrs[name] = MessageAttribute{
+			DataType:    dataType,
+			StringValue: stringValue,
+		}
+	}
+	return attrs, nil
 }
 
 type setSubscriptionAttributesXMLResponse struct {

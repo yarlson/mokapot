@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awssns "github.com/aws/aws-sdk-go-v2/service/sns"
+	snstypes "github.com/aws/aws-sdk-go-v2/service/sns/types"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/stretchr/testify/assert"
@@ -1260,7 +1261,7 @@ func TestIntegration_SNS_PublishFanout(t *testing.T) {
 		{recv1.Messages[0].Body},
 		{recv2.Messages[0].Body},
 	} {
-		var envelope map[string]string
+		var envelope map[string]any
 		err = json.Unmarshal([]byte(*msgs[0]), &envelope)
 		require.NoError(t, err)
 		assert.Equal(t, "Notification", envelope["Type"])
@@ -1321,7 +1322,7 @@ func TestIntegration_SNS_PublishSingleQueue(t *testing.T) {
 	require.Len(t, recvOut.Messages, 1)
 
 	// Verify envelope
-	var envelope map[string]string
+	var envelope map[string]any
 	err = json.Unmarshal([]byte(*recvOut.Messages[0].Body), &envelope)
 	require.NoError(t, err)
 	assert.Equal(t, "Notification", envelope["Type"])
@@ -1537,7 +1538,7 @@ func TestIntegration_SNS_EnvelopeVsRawDelivery(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, envRecv.Messages, 1)
 
-	var envelope map[string]string
+	var envelope map[string]any
 	err = json.Unmarshal([]byte(*envRecv.Messages[0].Body), &envelope)
 	require.NoError(t, err)
 	assert.Equal(t, "Notification", envelope["Type"])
@@ -1615,4 +1616,394 @@ func TestIntegration_SNS_SetSubscriptionAttributes_NotFound(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "NotFound")
+}
+
+// --- SNS Filter Policy integration tests ---
+
+func TestIntegration_SNS_FilterPolicy_AllowsMatchingMessages(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("filter-allow-topic"),
+	})
+	require.NoError(t, err)
+
+	// Create SQS queue
+	queueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("filter-allow-queue"),
+	})
+	require.NoError(t, err)
+
+	// Get queue ARN
+	attrOut, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queueARN := attrOut.Attributes["QueueArn"]
+
+	// Subscribe
+	subOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+
+	// Set filter policy
+	_, err = s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+		AttributeName:   aws.String("FilterPolicy"),
+		AttributeValue:  aws.String(`{"event_type": ["order_created"]}`),
+	})
+	require.NoError(t, err)
+
+	// Publish matching message
+	_, err = s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("matching message"),
+		MessageAttributes: map[string]snstypes.MessageAttributeValue{
+			"event_type": {
+				DataType:    aws.String("String"),
+				StringValue: aws.String("order_created"),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Message should arrive in the queue
+	recvOut, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+
+	var envelope map[string]any
+	err = json.Unmarshal([]byte(*recvOut.Messages[0].Body), &envelope)
+	require.NoError(t, err)
+	assert.Equal(t, "matching message", envelope["Message"])
+}
+
+func TestIntegration_SNS_FilterPolicy_BlocksNonMatchingMessages(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("filter-block-topic"),
+	})
+	require.NoError(t, err)
+
+	// Create SQS queue
+	queueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("filter-block-queue"),
+	})
+	require.NoError(t, err)
+
+	attrOut, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queueARN := attrOut.Attributes["QueueArn"]
+
+	subOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+
+	// Set filter policy
+	_, err = s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+		AttributeName:   aws.String("FilterPolicy"),
+		AttributeValue:  aws.String(`{"event_type": ["order_created"]}`),
+	})
+	require.NoError(t, err)
+
+	// Publish non-matching message
+	_, err = s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("filtered out"),
+		MessageAttributes: map[string]snstypes.MessageAttributeValue{
+			"event_type": {
+				DataType:    aws.String("String"),
+				StringValue: aws.String("user_created"),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Queue should be empty
+	recvOut, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvOut.Messages)
+}
+
+func TestIntegration_SNS_FilterPolicy_SelectiveDelivery(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("filter-selective-topic"),
+	})
+	require.NoError(t, err)
+
+	// Create two queues: one filtered, one unfiltered
+	filteredQueueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("filtered-queue"),
+	})
+	require.NoError(t, err)
+
+	unfilteredQueueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("unfiltered-queue"),
+	})
+	require.NoError(t, err)
+
+	// Get queue ARNs
+	fAttr, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       filteredQueueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	filteredQueueARN := fAttr.Attributes["QueueArn"]
+
+	uAttr, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       unfilteredQueueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	unfilteredQueueARN := uAttr.Attributes["QueueArn"]
+
+	// Subscribe both queues
+	filteredSub, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(filteredQueueARN),
+	})
+	require.NoError(t, err)
+
+	_, err = s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(unfilteredQueueARN),
+	})
+	require.NoError(t, err)
+
+	// Set filter policy only on first subscription
+	_, err = s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: filteredSub.SubscriptionArn,
+		AttributeName:   aws.String("FilterPolicy"),
+		AttributeValue:  aws.String(`{"event_type": ["order_created"]}`),
+	})
+	require.NoError(t, err)
+
+	// Publish non-matching message
+	_, err = s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("user event"),
+		MessageAttributes: map[string]snstypes.MessageAttributeValue{
+			"event_type": {
+				DataType:    aws.String("String"),
+				StringValue: aws.String("user_created"),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Filtered queue should be empty
+	recvFiltered, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            filteredQueueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvFiltered.Messages)
+
+	// Unfiltered queue should have the message
+	recvUnfiltered, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            unfilteredQueueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvUnfiltered.Messages, 1)
+}
+
+func TestIntegration_SNS_FilterPolicy_NumericCondition(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("filter-numeric-topic"),
+	})
+	require.NoError(t, err)
+
+	queueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("filter-numeric-queue"),
+	})
+	require.NoError(t, err)
+
+	attrOut, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queueARN := attrOut.Attributes["QueueArn"]
+
+	subOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+
+	// Filter: price between 100 and 200
+	_, err = s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+		AttributeName:   aws.String("FilterPolicy"),
+		AttributeValue:  aws.String(`{"price": [{"numeric": [">=", 100, "<=", 200]}]}`),
+	})
+	require.NoError(t, err)
+
+	// Publish in-range message
+	_, err = s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("in range"),
+		MessageAttributes: map[string]snstypes.MessageAttributeValue{
+			"price": {
+				DataType:    aws.String("Number"),
+				StringValue: aws.String("150"),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	recvOut, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+
+	// Delete the received message
+	_, err = s.sqsClient.DeleteMessage(ctx, &awssqs.DeleteMessageInput{
+		QueueUrl:      queueOut.QueueUrl,
+		ReceiptHandle: recvOut.Messages[0].ReceiptHandle,
+	})
+	require.NoError(t, err)
+
+	// Publish out-of-range message
+	_, err = s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("out of range"),
+		MessageAttributes: map[string]snstypes.MessageAttributeValue{
+			"price": {
+				DataType:    aws.String("Number"),
+				StringValue: aws.String("300"),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	recvOut2, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvOut2.Messages)
+}
+
+func TestIntegration_SNS_FilterPolicy_InvalidPolicyRejected(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("filter-invalid-topic"),
+	})
+	require.NoError(t, err)
+
+	queueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("filter-invalid-queue"),
+	})
+	require.NoError(t, err)
+
+	attrOut, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queueARN := attrOut.Attributes["QueueArn"]
+
+	subOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+
+	// Set invalid filter policy
+	_, err = s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+		AttributeName:   aws.String("FilterPolicy"),
+		AttributeValue:  aws.String(`not valid json`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidParameter")
+}
+
+func TestIntegration_SNS_FilterPolicy_GetSubscriptionAttributes(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("filter-gsa-topic"),
+	})
+	require.NoError(t, err)
+
+	queueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("filter-gsa-queue"),
+	})
+	require.NoError(t, err)
+
+	attrOut, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queueARN := attrOut.Attributes["QueueArn"]
+
+	subOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+
+	filterPolicyJSON := `{"event_type": ["order_created"]}`
+	_, err = s.snsClient.SetSubscriptionAttributes(ctx, &awssns.SetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+		AttributeName:   aws.String("FilterPolicy"),
+		AttributeValue:  aws.String(filterPolicyJSON),
+	})
+	require.NoError(t, err)
+
+	// Get subscription attributes — should include FilterPolicy
+	gsaOut, err := s.snsClient.GetSubscriptionAttributes(ctx, &awssns.GetSubscriptionAttributesInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, filterPolicyJSON, gsaOut.Attributes["FilterPolicy"])
 }

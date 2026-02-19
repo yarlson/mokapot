@@ -107,7 +107,7 @@ func TestPublish_SingleSubscriber(t *testing.T) {
 	_, err = e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:my-queue")
 	require.NoError(t, err)
 
-	result, err := e.Publish(topic.ARN, "hello world", "")
+	result, err := e.Publish(topic.ARN, "hello world", "", nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.MessageID)
 
@@ -116,7 +116,7 @@ func TestPublish_SingleSubscriber(t *testing.T) {
 	assert.Equal(t, "my-queue", rec.deliveries[0].QueueName)
 
 	// Verify envelope structure
-	var envelope map[string]string
+	var envelope map[string]any
 	err = json.Unmarshal([]byte(rec.deliveries[0].Body), &envelope)
 	require.NoError(t, err)
 	assert.Equal(t, "Notification", envelope["Type"])
@@ -136,12 +136,12 @@ func TestPublish_WithSubject(t *testing.T) {
 	_, err = e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
 	require.NoError(t, err)
 
-	_, err = e.Publish(topic.ARN, "msg body", "Test Subject")
+	_, err = e.Publish(topic.ARN, "msg body", "Test Subject", nil)
 	require.NoError(t, err)
 
 	require.Len(t, rec.deliveries, 1)
 
-	var envelope map[string]string
+	var envelope map[string]any
 	err = json.Unmarshal([]byte(rec.deliveries[0].Body), &envelope)
 	require.NoError(t, err)
 	assert.Equal(t, "Test Subject", envelope["Subject"])
@@ -159,7 +159,7 @@ func TestPublish_MultipleSubscribers(t *testing.T) {
 	_, err = e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:queue-b")
 	require.NoError(t, err)
 
-	_, err = e.Publish(topic.ARN, "fanout message", "")
+	_, err = e.Publish(topic.ARN, "fanout message", "", nil)
 	require.NoError(t, err)
 
 	// Both queues should receive the message
@@ -180,7 +180,7 @@ func TestPublish_NoSubscribers(t *testing.T) {
 	topic, err := e.CreateTopic("empty-topic")
 	require.NoError(t, err)
 
-	result, err := e.Publish(topic.ARN, "message to nobody", "")
+	result, err := e.Publish(topic.ARN, "message to nobody", "", nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.MessageID)
 	assert.Empty(t, rec.deliveries)
@@ -190,7 +190,7 @@ func TestPublish_TopicNotFound(t *testing.T) {
 	rec := &enqueueRecorder{}
 	e := newEngine(rec)
 
-	_, err := e.Publish("arn:aws:sns:eu-central-1:000000000000:nonexistent", "msg", "")
+	_, err := e.Publish("arn:aws:sns:eu-central-1:000000000000:nonexistent", "msg", "", nil)
 	assert.ErrorIs(t, err, sns.ErrTopicNotFound)
 }
 
@@ -201,7 +201,7 @@ func TestPublish_EmptyMessage(t *testing.T) {
 	topic, err := e.CreateTopic("my-topic")
 	require.NoError(t, err)
 
-	_, err = e.Publish(topic.ARN, "", "")
+	_, err = e.Publish(topic.ARN, "", "", nil)
 	assert.ErrorIs(t, err, sns.ErrInvalidParameter)
 }
 
@@ -216,7 +216,7 @@ func TestPublish_DeliveryFailureSilent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Publish should succeed even when delivery fails
-	result, err := e.Publish(topic.ARN, "msg", "")
+	result, err := e.Publish(topic.ARN, "msg", "", nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.MessageID)
 }
@@ -237,7 +237,7 @@ func TestPublish_RawMessageDelivery(t *testing.T) {
 	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "RawMessageDelivery", "true")
 	require.NoError(t, err)
 
-	_, err = e.Publish(topic.ARN, "raw body content", "")
+	_, err = e.Publish(topic.ARN, "raw body content", "", nil)
 	require.NoError(t, err)
 
 	require.Len(t, rec.deliveries, 1)
@@ -246,7 +246,7 @@ func TestPublish_RawMessageDelivery(t *testing.T) {
 	assert.Equal(t, "raw body content", rec.deliveries[0].Body)
 
 	// Verify it's NOT JSON-parseable as an SNS envelope
-	var envelope map[string]string
+	var envelope map[string]any
 	err = json.Unmarshal([]byte(rec.deliveries[0].Body), &envelope)
 	assert.Error(t, err, "raw body should not be a JSON envelope")
 }
@@ -269,7 +269,7 @@ func TestPublish_MixedRawAndEnvelope(t *testing.T) {
 	err = e.SetSubscriptionAttributes(rawSub.SubscriptionARN, "RawMessageDelivery", "true")
 	require.NoError(t, err)
 
-	_, err = e.Publish(topic.ARN, "test message", "")
+	_, err = e.Publish(topic.ARN, "test message", "", nil)
 	require.NoError(t, err)
 
 	require.Len(t, rec.deliveries, 2)
@@ -288,7 +288,7 @@ func TestPublish_MixedRawAndEnvelope(t *testing.T) {
 	assert.Equal(t, "test message", rawBody)
 
 	// Envelope queue gets SNS JSON envelope
-	var envelope map[string]string
+	var envelope map[string]any
 	err = json.Unmarshal([]byte(envelopeBody), &envelope)
 	require.NoError(t, err)
 	assert.Equal(t, "Notification", envelope["Type"])
@@ -309,13 +309,13 @@ func TestPublish_RawDeliveryDisabled(t *testing.T) {
 	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "RawMessageDelivery", "false")
 	require.NoError(t, err)
 
-	_, err = e.Publish(topic.ARN, "envelope message", "")
+	_, err = e.Publish(topic.ARN, "envelope message", "", nil)
 	require.NoError(t, err)
 
 	require.Len(t, rec.deliveries, 1)
 
 	// Should be an SNS envelope
-	var envelope map[string]string
+	var envelope map[string]any
 	err = json.Unmarshal([]byte(rec.deliveries[0].Body), &envelope)
 	require.NoError(t, err)
 	assert.Equal(t, "Notification", envelope["Type"])
@@ -422,4 +422,210 @@ func TestGetSubscriptionAttributes_EmptyARN(t *testing.T) {
 
 	_, err := e.GetSubscriptionAttributes("")
 	assert.ErrorIs(t, err, sns.ErrInvalidParameter)
+}
+
+// --- FilterPolicy tests ---
+
+func TestPublish_FilterPolicy_ExactStringMatch(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("filter-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:filter-queue")
+	require.NoError(t, err)
+
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "FilterPolicy", `{"event_type": ["order_created"]}`)
+	require.NoError(t, err)
+
+	// Matching message — should be delivered
+	_, err = e.Publish(topic.ARN, "matching msg", "", map[string]sns.MessageAttribute{
+		"event_type": {DataType: "String", StringValue: "order_created"},
+	})
+	require.NoError(t, err)
+	require.Len(t, rec.deliveries, 1)
+
+	// Non-matching message — should be filtered out
+	_, err = e.Publish(topic.ARN, "non-matching msg", "", map[string]sns.MessageAttribute{
+		"event_type": {DataType: "String", StringValue: "user_created"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, rec.deliveries, 1) // still 1, no new delivery
+}
+
+func TestPublish_FilterPolicy_NoAttributes(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("filter-topic-no-attrs")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "FilterPolicy", `{"event_type": ["order_created"]}`)
+	require.NoError(t, err)
+
+	// No message attributes — should be filtered out
+	_, err = e.Publish(topic.ARN, "no attrs msg", "", nil)
+	require.NoError(t, err)
+	assert.Empty(t, rec.deliveries)
+}
+
+func TestPublish_FilterPolicy_NoPolicy_AllDelivered(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("no-filter-topic")
+	require.NoError(t, err)
+
+	_, err = e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	// No filter policy — all messages should be delivered
+	_, err = e.Publish(topic.ARN, "any msg", "", map[string]sns.MessageAttribute{
+		"event_type": {DataType: "String", StringValue: "anything"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, rec.deliveries, 1)
+}
+
+func TestPublish_FilterPolicy_MixedSubscriptions(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("mixed-filter-topic")
+	require.NoError(t, err)
+
+	// Subscription with filter
+	filtered, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:filtered-queue")
+	require.NoError(t, err)
+	err = e.SetSubscriptionAttributes(filtered.SubscriptionARN, "FilterPolicy", `{"event_type": ["order_created"]}`)
+	require.NoError(t, err)
+
+	// Subscription without filter
+	_, err = e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:unfiltered-queue")
+	require.NoError(t, err)
+
+	// Publish non-matching message
+	_, err = e.Publish(topic.ARN, "msg", "", map[string]sns.MessageAttribute{
+		"event_type": {DataType: "String", StringValue: "user_created"},
+	})
+	require.NoError(t, err)
+
+	// Only unfiltered queue should receive
+	require.Len(t, rec.deliveries, 1)
+	assert.Equal(t, "unfiltered-queue", rec.deliveries[0].QueueName)
+}
+
+func TestPublish_FilterPolicy_Exists(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("exists-filter-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "FilterPolicy", `{"customer_id": [{"exists": true}]}`)
+	require.NoError(t, err)
+
+	// Message with the attribute — delivered
+	_, err = e.Publish(topic.ARN, "has attr", "", map[string]sns.MessageAttribute{
+		"customer_id": {DataType: "String", StringValue: "123"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, rec.deliveries, 1)
+
+	// Message without the attribute — filtered
+	_, err = e.Publish(topic.ARN, "no attr", "", map[string]sns.MessageAttribute{
+		"other": {DataType: "String", StringValue: "val"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, rec.deliveries, 1) // still 1
+}
+
+func TestPublish_FilterPolicy_NumericBetween(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("numeric-filter-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "FilterPolicy", `{"price": [{"numeric": [">=", 100, "<=", 200]}]}`)
+	require.NoError(t, err)
+
+	// In range
+	_, err = e.Publish(topic.ARN, "in range", "", map[string]sns.MessageAttribute{
+		"price": {DataType: "Number", StringValue: "150"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, rec.deliveries, 1)
+
+	// Out of range
+	_, err = e.Publish(topic.ARN, "out of range", "", map[string]sns.MessageAttribute{
+		"price": {DataType: "Number", StringValue: "300"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, rec.deliveries, 1) // still 1
+}
+
+func TestSetSubscriptionAttributes_FilterPolicy_Valid(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("fp-valid-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "FilterPolicy", `{"event_type": ["order_created"]}`)
+	require.NoError(t, err)
+
+	attrs, err := e.GetSubscriptionAttributes(sub.SubscriptionARN)
+	require.NoError(t, err)
+	assert.Equal(t, `{"event_type": ["order_created"]}`, attrs["FilterPolicy"])
+}
+
+func TestSetSubscriptionAttributes_FilterPolicy_Invalid(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("fp-invalid-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "FilterPolicy", `not json`)
+	assert.ErrorIs(t, err, sns.ErrInvalidParameter)
+}
+
+func TestSetSubscriptionAttributes_FilterPolicy_Empty(t *testing.T) {
+	rec := &enqueueRecorder{}
+	e := newEngine(rec)
+
+	topic, err := e.CreateTopic("fp-empty-topic")
+	require.NoError(t, err)
+
+	sub, err := e.Subscribe(topic.ARN, "sqs", "arn:aws:sqs:eu-central-1:000000000000:q")
+	require.NoError(t, err)
+
+	// Set a filter policy first
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "FilterPolicy", `{"key": ["val"]}`)
+	require.NoError(t, err)
+
+	// Clear filter policy with empty string
+	err = e.SetSubscriptionAttributes(sub.SubscriptionARN, "FilterPolicy", "")
+	require.NoError(t, err)
+
+	attrs, err := e.GetSubscriptionAttributes(sub.SubscriptionARN)
+	require.NoError(t, err)
+	assert.Equal(t, "", attrs["FilterPolicy"])
 }
