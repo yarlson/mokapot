@@ -7,7 +7,7 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 ## Architecture
 
 - **Single Go binary** (`messagingd`) serving HTTP on port 4566
-- **AWS Query API protocol**: `application/x-www-form-urlencoded` input, XML responses
+- **Dual protocol**: AWS Query (form-encoded + XML) and AWS JSON 1.0 (`application/x-amz-json-1.0` + JSON)
 - **SigV4 passthrough**: accepts signed requests without validating signatures
 - **Routing**: `POST /` for global actions (CreateQueue, ListQueues), `POST /{accountId}/{queueName}` for queue-scoped actions
 - **SNS delivery protocol**: `sqs` only (no http/email/sms/lambda)
@@ -42,21 +42,28 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 
 ## System State
 
-The project is in early development. Slice 1 (service boots in docker-compose) is implemented:
+SQS core message lifecycle is operational. SNS is not yet implemented.
+
+**Operational:**
 - `messagingd` binary boots, listens on configurable PORT (default 4566)
 - `GET /_health` returns `{"status":"ok"}`
 - Graceful shutdown on SIGINT/SIGTERM
 - Structured JSON logging with configurable level
 - Dockerfile (multi-stage, alpine) and docker-compose.yml operational
+- SQS queue CRUD: CreateQueue (idempotent), GetQueueUrl, SendMessage, ReceiveMessage, DeleteMessage
+- Dual protocol support: AWS Query/XML and AWS JSON 1.0 (Go/JS SDK v3)
+- In-memory queue engine with per-queue mutex, visibility timeout, receipt handle tracking
+- Integration tests using real AWS SDK Go v2 client against test server
 
-No SQS/SNS business logic implemented yet.
+**Not yet implemented:** ListQueues response, batch operations, long polling, delayed messages, DLQ, PurgeQueue, ChangeMessageVisibility, SNS, persistence
 
 ## Tech Stack
 
 - **Language:** Go 1.25
 - **Module:** `github.com/yarlson/devstack`
-- **Testing:** `testify`
+- **Testing:** `testify`, `aws-sdk-go-v2` (integration tests)
 - **Linting:** `golangci-lint`
 - **Logging:** `log/slog` with JSON handler
 - **Container:** Alpine-based multi-stage Docker build
 - **Orchestration:** docker-compose
+- **IDs:** `github.com/google/uuid`

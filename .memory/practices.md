@@ -31,10 +31,10 @@
 ## Project Structure
 
 ```
-cmd/messagingd/    — entrypoint
-internal/httpapi/  — HTTP server, routing, middleware
-internal/query/    — Query decoder, XML encoder, error helpers (planned)
-internal/sqs/      — handlers + queue engine (planned)
+cmd/messagingd/    — entrypoint; configures engine, handler, HTTP server
+internal/httpapi/  — HTTP server, routing (health, root POST, queue-scoped POST)
+internal/query/    — form-encoded request parser, XML response writer, error helpers
+internal/sqs/      — SQS handler (protocol dispatch) + engine (in-memory queue store)
 internal/sns/      — handlers + topic/subscription + delivery (planned)
 internal/store/    — interfaces + memory store + bbolt store (planned)
 internal/runtime/  — schedulers, waiter management (planned)
@@ -44,7 +44,7 @@ internal/types/    — shared structs, canonical encodings (planned)
 ## Configuration
 
 All via environment variables (optional, with defaults):
-- `PORT` (4566), `REGION` (eu-central-1), `ACCOUNT_ID` (000000000000)
+- `PORT` (4566), `REGION` (eu-central-1), `ACCOUNT_ID` (000000000000), `SQS_HOST` (localhost)
 - `LOG_LEVEL` (info), `DATA_DIR` (empty = in-memory), `PERSISTENCE` (memory)
 
 ## Concurrency Model

@@ -16,21 +16,30 @@ messagingd (cmd/messagingd/main.go)
   │ — graceful shutdown on SIGINT/SIGTERM
   │
   ▼
-httpapi.NewServer() (internal/httpapi/server.go)
+httpapi.NewServer(sqsHandler) (internal/httpapi/server.go)
   │ — http.ServeMux routing
-  │ — currently: GET /_health only
-  │ — planned: POST / and POST /{accountId}/{queueName}
+  │ — GET /_health
+  │ — POST / → handleRoot → sqsHandler.HandleRequest
+  │ — POST /{accountId}/{queueName} → handleQueueScoped → sqsHandler.HandleRequest
   │
   ▼
-Query Parser (planned: internal/query/)
-  │ — decodes form-encoded Action param
-  │ — dispatches to SQS or SNS handler
+Query Parser (internal/query/query.go)
+  │ — ParseRequest: decodes form-encoded body → url.Values
+  │ — Params: .Action(), .Get(key) accessors
+  │ — WriteXML / WriteError: AWS-style XML responses
   │
-  ├─▶ SQS Handlers (planned: internal/sqs/)
-  │     │ — queue engine: available/inflight/delayed stores
-  │     │ — visibility timeout, long polling, delay, DLQ
+  ├─▶ SQS Handler (internal/sqs/handler.go)
+  │     │ — detects JSON vs Query protocol from Content-Type
+  │     │ — dispatches by Action to engine methods
+  │     │ — returns XML or JSON responses
   │     ▼
-  │   Store Interface (planned: internal/store/)
+  │   SQS Engine (internal/sqs/engine.go)
+  │     │ — in-memory queue store (map[string]*Queue)
+  │     │ — per-queue: available []*Message, inflight map
+  │     │ — visibility timeout, receipt handle tracking
+  │     │ — thread-safe via sync.RWMutex + per-queue sync.Mutex
+  │
+  ├─▶ Store Interface (planned: internal/store/)
   │     ├─ memory (default)
   │     └─ bbolt (optional persistence)
   │
@@ -46,10 +55,10 @@ Query Parser (planned: internal/query/)
 14 vertical slices defined in `slices/SLICES.md`. Dependency graph:
 
 ```
-1  Service boots (DONE)
+1  Service boots ✓
 │
-2  Send + receive + delete  ← foundation
-├── 3  Visibility timeout
+2  Send + receive + delete ✓  ← foundation
+├── 3  Visibility timeout (basic impl in engine, no ChangeMessageVisibility action yet)
 │   ├── 4  Long polling
 │   ├── 6  Dead-letter queue
 │   └── 12 Change visibility
@@ -71,6 +80,7 @@ Query Parser (planned: internal/query/)
 - **Only `sqs` protocol** for SNS subscriptions
 - **No FIFO queues** by default (scope undefined, deferred)
 - **No per-message goroutine timers** — global scheduler with deadline heap
+- **Dual protocol in handler** — Content-Type `application/x-amz-json-1.0` triggers JSON path (Go/JS SDK v3); form-encoded triggers Query/XML path (PHP/older SDKs)
 
 ## Docker
 
