@@ -25,7 +25,7 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 - Queue CRUD (CreateQueue, DeleteQueue, ListQueues, GetQueueUrl)
 - Queue attributes (Get/SetQueueAttributes)
 - Message lifecycle: SendMessage, ReceiveMessage, DeleteMessage
-- Batch operations: SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch
+- Batch operations: SendMessageBatch, DeleteMessageBatch (with partial failure, duplicate ID detection, batch size validation)
 - Visibility timeout with automatic reappearance
 - Long polling (WaitTimeSeconds)
 - Delayed messages (DelaySeconds)
@@ -58,10 +58,11 @@ SQS core message lifecycle is operational. SNS is not yet implemented.
 - Delayed messages: per-message DelaySeconds (0–900) overrides queue-level DelaySeconds attribute; delayed messages are invisible until AvailableAt; long-poll waiters wake when delayed messages become receivable
 - Get/SetQueueAttributes with validation (mutable attribute whitelist, numeric range checks)
 - Dead-letter queue: RedrivePolicy (deadLetterTargetArn + maxReceiveCount); messages exceeding maxReceiveCount are moved to DLQ during ReceiveMessage; DLQ existence validated on SetQueueAttributes
+- Batch operations: SendMessageBatch and DeleteMessageBatch with per-entry error handling, partial failure support, duplicate ID detection, batch size validation (max 10), per-entry DelaySeconds override
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 
-**Not yet implemented:** ListQueues response, batch operations, PurgeQueue, ChangeMessageVisibility, SNS, persistence
+**Not yet implemented:** ListQueues response, PurgeQueue, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS, persistence
 
 ## Tech Stack
 

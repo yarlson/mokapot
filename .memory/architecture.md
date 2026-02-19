@@ -40,6 +40,7 @@ Query Parser (internal/query/query.go)
   │     │ — long polling: waiter channels notified on SendMessage; timer-based wakeup for visibility expiry and delayed message availability
   │     │ — delayed messages: per-message or queue-level DelaySeconds; filtered in receiveFromQueue
   │     │ — dead-letter queue: RedrivePolicy on source queue; messages exceeding maxReceiveCount moved to DLQ during receive
+  │     │ — batch operations: SendMessageBatch/DeleteMessageBatch with partial failure, per-entry error isolation
   │     │ — Get/SetQueueAttributes: mutable attribute whitelist, numeric range validation, RedrivePolicy DLQ existence check
   │     │ — receipt handle regeneration + ReceiveCount tracking
   │     │ — injectable clock (now func() time.Time)
@@ -70,7 +71,7 @@ Query Parser (internal/query/query.go)
 │   ├── 6  Dead-letter queue ✓
 │   └── 12 Change visibility
 ├── 5  Delayed messages ✓
-├── 7  Batch operations
+├── 7  Batch operations ✓ (SendMessageBatch, DeleteMessageBatch)
 ├── 8  Purge queue
 ├── 9  SNS fanout (envelope)
 │   ├── 10 Raw delivery

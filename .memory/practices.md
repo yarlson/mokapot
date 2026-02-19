@@ -72,6 +72,7 @@ All via environment variables (optional, with defaults):
 - HTTP 400 for client errors; correct AWS error codes (QueueDoesNotExist, ReceiptHandleIsInvalid, InvalidParameterValue, etc.)
 - Sentinel errors in `errors.go`; wrap with `fmt.Errorf("%w: detail", ErrFoo)` for `errors.Is` compatibility
 - `sanitizeErrorMessage` strips sentinel prefix before returning to API callers
+- **Batch error pattern**: batch operations (SendMessageBatch, DeleteMessageBatch) never fail the entire request for per-entry errors; individual entry failures are collected in `Failed` result array with `SenderFault`, `Code`, `Message` fields; only structural errors (empty batch, >10 entries, duplicate IDs, non-existent queue) return top-level errors
 
 ## Visual Validation
 
