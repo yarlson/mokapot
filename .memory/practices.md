@@ -1,0 +1,64 @@
+# Practices and Conventions
+
+## Development Workflow
+
+- **Test-Driven Development** is mandatory: write failing test first, implement, refactor, run checks
+- After every code change run: `golangci-lint run` (0 issues) and `go test ./...` (all pass)
+- No commits without passing checks
+
+## Go Conventions
+
+- Idiomatic Go: no unnecessary abstractions, no Java-style patterns
+- Composition over complex hierarchies
+- Prefer standard library patterns
+- Let golangci-lint guide style decisions
+- Interfaces close to consumers, not in separate `interfaces.go` files
+- DRY, KISS, YAGNI
+
+## Dependencies
+
+- Use `go get package@latest` (never edit go.mod directly)
+- Run `go mod tidy` after adding dependencies
+- Don't pin versions during installation
+
+## Testing
+
+- Primary test client: **AWS SDK for Go v2** (`github.com/aws/aws-sdk-go-v2`) for integration tests — same protocol real apps use, catches SigV4/XML compatibility issues
+- Unit tests use `testify` (assert + require)
+- Golden response shape tests for each action (verify XML structure, required fields, error shapes)
+- Node.js and PHP SDK tests for final validation, not primary feedback loop
+
+## Project Structure
+
+```
+cmd/messagingd/    — entrypoint
+internal/httpapi/  — HTTP server, routing, middleware
+internal/query/    — Query decoder, XML encoder, error helpers (planned)
+internal/sqs/      — handlers + queue engine (planned)
+internal/sns/      — handlers + topic/subscription + delivery (planned)
+internal/store/    — interfaces + memory store + bbolt store (planned)
+internal/runtime/  — schedulers, waiter management (planned)
+internal/types/    — shared structs, canonical encodings (planned)
+```
+
+## Configuration
+
+All via environment variables (optional, with defaults):
+- `PORT` (4566), `REGION` (eu-central-1), `ACCOUNT_ID` (000000000000)
+- `LOG_LEVEL` (info), `DATA_DIR` (empty = in-memory), `PERSISTENCE` (memory)
+
+## Concurrency Model
+
+- Per-queue mutex guarding: available deque, inflight map, delayed heap, waiter list
+- Global scheduler goroutine wakes at next deadline across all queues
+- No per-message goroutine timers (avoid goroutine explosion)
+- Waiters use channels with deadlines, notified on availability changes
+
+## Error Handling
+
+- AWS Query-style XML error responses with Code, Message, RequestId
+- HTTP 400 for client errors; correct AWS error codes (QueueDoesNotExist, ReceiptHandleIsInvalid, etc.)
+
+## Visual Validation
+
+- Use `scr` skill for CLI/TUI output validation (formatting, colors, tables, progress indicators)
