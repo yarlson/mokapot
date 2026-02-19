@@ -32,7 +32,7 @@
 ## Project Structure
 
 ```
-cmd/messagingd/    — entrypoint; configures engine, handler, HTTP server
+cmd/mokapot/    — entrypoint; configures engine, handler, HTTP server
 internal/httpapi/  — HTTP server, routing (health, root POST, queue-scoped POST)
 internal/query/    — form-encoded request parser, XML response writer, error helpers
 internal/sqs/      — SQS handler (protocol dispatch) + engine (in-memory queue store)

@@ -529,7 +529,7 @@ On restart:
 
 ### 14.1 Package/module structure (recommended)
 
-- `cmd/messagingd/` – main
+- `cmd/mokapot/` – main
 - `internal/httpapi/` – HTTP server, routing, middleware
 - `internal/query/` – Query decoder, XML encoder, error helpers
 - `internal/sqs/` – handlers + queue engine
@@ -599,7 +599,7 @@ Example:
 ```yaml
 services:
   messaging:
-    image: yourorg/messagingd:dev
+    image: yourorg/mokapot:dev
     ports:
       - "4566:4566"
     environment:
@@ -643,7 +643,7 @@ Node.js + PHP apps set:
 
 Provide a test harness that runs inside CI using docker:
 
-- Start `messagingd`
+- Start `mokapot`
 - Run:
   1. Node.js test using AWS SDK (v3 typical)
   2. PHP test using AWS SDK for PHP

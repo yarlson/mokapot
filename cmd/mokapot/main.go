@@ -41,7 +41,7 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("starting messagingd", "port", port, "region", region, "accountId", accountID)
+		slog.Info("starting mokapot", "port", port, "region", region, "accountId", accountID)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}

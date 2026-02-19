@@ -10,7 +10,7 @@ HTTP POST to http://messaging:4566/
   or http://messaging:4566/{accountId}/{queueName}
   │
   ▼
-messagingd (cmd/messagingd/main.go)
+mokapot (cmd/mokapot/main.go)
   │ — configures slog JSON logger
   │ — starts http.Server with timeouts
   │ — graceful shutdown on SIGINT/SIGTERM

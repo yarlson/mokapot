@@ -1,6 +1,6 @@
 # Terminology
 
-**messagingd** — the main Go binary and entrypoint; the local SQS/SNS emulator service
+**mokapot** — the main Go binary and entrypoint; the local SQS/SNS emulator service
 
 **Queue URL** — `http://{host}:{port}/{accountId}/{queueName}` — the canonical address for an SQS queue
 

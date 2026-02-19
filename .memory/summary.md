@@ -6,7 +6,7 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 
 ## Architecture
 
-- **Single Go binary** (`messagingd`) serving HTTP on port 4566
+- **Single Go binary** (`mokapot`) serving HTTP on port 4566
 - **Dual protocol**: AWS Query (form-encoded + XML) and AWS JSON 1.0 (`application/x-amz-json-1.0` + JSON)
 - **SigV4 passthrough**: accepts signed requests without validating signatures
 - **Routing**: `POST /` for global actions (CreateQueue, ListQueues), `POST /{accountId}/{queueName}` for queue-scoped actions
@@ -48,7 +48,7 @@ SQS core message lifecycle is operational. SNS is not yet implemented.
 
 **Operational:**
 
-- `messagingd` binary boots, listens on configurable PORT (default 4566)
+- `mokapot` binary boots, listens on configurable PORT (default 4566)
 - `GET /_health` returns `{"status":"ok"}`
 - Graceful shutdown on SIGINT/SIGTERM
 - Structured JSON logging with configurable level
