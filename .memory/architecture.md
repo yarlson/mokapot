@@ -35,10 +35,12 @@ Query Parser (internal/query/query.go)
   │     ▼
   │   SQS Engine (internal/sqs/engine.go)
   │     │ — in-memory queue store (map[string]*Queue)
-  │     │ — per-queue: available []*Message, inflight map
+  │     │ — per-queue: available []*Message, inflight map, waiter list
   │     │ — visibility timeout with lazy reappearance on ReceiveMessage
+  │     │ — long polling: waiter channels notified on SendMessage; timer-based wakeup for visibility expiry
   │     │ — receipt handle regeneration + ReceiveCount tracking
   │     │ — injectable clock (now func() time.Time)
+  │     │ — context-aware ReceiveMessage (cancellable long polls)
   │     │ — thread-safe via sync.RWMutex + per-queue sync.Mutex
   │
   ├─▶ Store Interface (planned: internal/store/)
@@ -61,7 +63,7 @@ Query Parser (internal/query/query.go)
 │
 2  Send + receive + delete ✓  ← foundation
 ├── 3  Visibility timeout ✓ (reappearance + receipt handle invalidation; no ChangeMessageVisibility action yet)
-│   ├── 4  Long polling
+│   ├── 4  Long polling ✓
 │   ├── 6  Dead-letter queue
 │   └── 12 Change visibility
 ├── 5  Delayed messages

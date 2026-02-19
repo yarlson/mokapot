@@ -50,11 +50,12 @@ All via environment variables (optional, with defaults):
 
 ## Concurrency Model
 
-- Per-queue mutex guarding: available slice, inflight map, delayed heap (planned), waiter list (planned)
+- Per-queue mutex guarding: available slice, inflight map, waiter list, delayed heap (planned)
 - Visibility reappearance is **lazy**: expired inflight messages are requeued at the start of each `ReceiveMessage` call (no background goroutine)
-- Global scheduler goroutine wakes at next deadline across all queues (planned, for long polling)
+- **Long polling**: waiter struct holds a buffered channel; `SendMessage` calls `notifyWaiters()` (under queue lock) to wake all blocked receivers; polling loop also wakes on nearest inflight expiry to pick up reappearing messages
 - No per-message goroutine timers (avoid goroutine explosion)
-- Waiters use channels with deadlines, notified on availability changes (planned)
+- No global scheduler goroutine for long polling — each long-polling `ReceiveMessage` manages its own timer and waiter lifecycle
+- `ReceiveMessage` accepts `context.Context` — context cancellation terminates long polls gracefully
 
 ## Error Handling
 
