@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/yarlson/devstack/internal/httpapi"
 	"github.com/yarlson/devstack/internal/sqs"
 )
@@ -20,7 +21,7 @@ func newTestServer() http.Handler {
 func TestHealthEndpoint(t *testing.T) {
 	srv := newTestServer()
 
-	req := httptest.NewRequest(http.MethodGet, "/_health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_health", http.NoBody)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -36,7 +37,7 @@ func TestHealthEndpoint(t *testing.T) {
 func TestGetOnPostRouteReturns405(t *testing.T) {
 	srv := newTestServer()
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 

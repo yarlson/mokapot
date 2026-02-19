@@ -62,7 +62,7 @@ func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request, pathQueueNa
 	case "SendMessage":
 		h.sendMessageJSON(w, raw, pathQueueName)
 	case "ReceiveMessage":
-		h.receiveMessageJSON(w, raw, pathQueueName)
+		h.receiveMessageJSON(w, r, raw, pathQueueName)
 	case "DeleteMessage":
 		h.deleteMessageJSON(w, raw, pathQueueName)
 	default:
@@ -190,7 +190,7 @@ func (h *Handler) sendMessageJSON(w http.ResponseWriter, raw map[string]json.Raw
 	})
 }
 
-func (h *Handler) receiveMessageJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
+func (h *Handler) receiveMessageJSON(w http.ResponseWriter, r *http.Request, raw map[string]json.RawMessage, pathQueueName string) {
 	queueName := pathQueueName
 	if queueName == "" {
 		queueName = queueNameFromURL(jsonString(raw, "QueueUrl"))
@@ -227,7 +227,25 @@ func (h *Handler) receiveMessageJSON(w http.ResponseWriter, raw map[string]json.
 		visibilityTimeout = vt
 	}
 
-	msgs, err := h.engine.ReceiveMessage(queueName, maxMessages, visibilityTimeout)
+	waitTimeSeconds := -1
+	if v, ok := jsonInt(raw, "WaitTimeSeconds"); ok {
+		if v < 0 || v > 20 {
+			writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Value for parameter WaitTimeSeconds is invalid. Reason: Must be between 0 and 20.")
+			return
+		}
+		waitTimeSeconds = v
+	}
+
+	if waitTimeSeconds < 0 {
+		wt, err := h.engine.GetQueueWaitTimeSeconds(queueName)
+		if err != nil {
+			writeJSONQueueError(w, err)
+			return
+		}
+		waitTimeSeconds = wt
+	}
+
+	msgs, err := h.engine.ReceiveMessage(r.Context(), queueName, maxMessages, visibilityTimeout, waitTimeSeconds)
 	if err != nil {
 		writeJSONQueueError(w, err)
 		return
@@ -249,8 +267,8 @@ func (h *Handler) receiveMessageJSON(w http.ResponseWriter, raw map[string]json.
 			MD5OfBody:     msg.MD5OfBody,
 			Body:          msg.Body,
 			Attributes: map[string]string{
-				"SentTimestamp":                  strconv.FormatInt(msg.SentTimestamp, 10),
-				"ApproximateReceiveCount":        strconv.Itoa(msg.ReceiveCount),
+				"SentTimestamp":                    strconv.FormatInt(msg.SentTimestamp, 10),
+				"ApproximateReceiveCount":          strconv.Itoa(msg.ReceiveCount),
 				"ApproximateFirstReceiveTimestamp": strconv.FormatInt(msg.FirstReceivedAt, 10),
 			},
 		})
@@ -303,7 +321,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request, pathQueueN
 	case "SendMessage":
 		h.sendMessageXML(w, params, pathQueueName)
 	case "ReceiveMessage":
-		h.receiveMessageXML(w, params, pathQueueName)
+		h.receiveMessageXML(w, r, params, pathQueueName)
 	case "DeleteMessage":
 		h.deleteMessageXML(w, params, pathQueueName)
 	default:
@@ -314,7 +332,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request, pathQueueN
 // --- XML types ---
 
 type createQueueXMLResponse struct {
-	XMLName  xml.Name         `xml:"CreateQueueResponse"`
+	XMLName  xml.Name             `xml:"CreateQueueResponse"`
 	Result   createQueueXMLResult `xml:"CreateQueueResult"`
 	Metadata query.ResponseMetadata
 }
@@ -343,7 +361,7 @@ func (h *Handler) createQueueXML(w http.ResponseWriter, params query.Params) {
 }
 
 type getQueueURLXMLResponse struct {
-	XMLName  xml.Name          `xml:"GetQueueUrlResponse"`
+	XMLName  xml.Name             `xml:"GetQueueUrlResponse"`
 	Result   getQueueURLXMLResult `xml:"GetQueueUrlResult"`
 	Metadata query.ResponseMetadata
 }
@@ -372,7 +390,7 @@ func (h *Handler) getQueueURLXML(w http.ResponseWriter, params query.Params) {
 }
 
 type sendMessageXMLResponse struct {
-	XMLName  xml.Name          `xml:"SendMessageResponse"`
+	XMLName  xml.Name             `xml:"SendMessageResponse"`
 	Result   sendMessageXMLResult `xml:"SendMessageResult"`
 	Metadata query.ResponseMetadata
 }
@@ -420,10 +438,10 @@ type receiveMessageXMLResult struct {
 }
 
 type receiveMessageXMLEntry struct {
-	MessageID     string               `xml:"MessageId"`
-	ReceiptHandle string               `xml:"ReceiptHandle"`
-	MD5OfBody     string               `xml:"MD5OfBody"`
-	Body          string               `xml:"Body"`
+	MessageID     string                `xml:"MessageId"`
+	ReceiptHandle string                `xml:"ReceiptHandle"`
+	MD5OfBody     string                `xml:"MD5OfBody"`
+	Body          string                `xml:"Body"`
 	Attributes    []xmlMessageAttribute `xml:"Attribute,omitempty"`
 }
 
@@ -432,7 +450,7 @@ type xmlMessageAttribute struct {
 	Value string `xml:"Value"`
 }
 
-func (h *Handler) receiveMessageXML(w http.ResponseWriter, params query.Params, queueName string) {
+func (h *Handler) receiveMessageXML(w http.ResponseWriter, r *http.Request, params query.Params, queueName string) {
 	if queueName == "" {
 		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
 		return
@@ -469,7 +487,27 @@ func (h *Handler) receiveMessageXML(w http.ResponseWriter, params query.Params, 
 		visibilityTimeout = vt
 	}
 
-	msgs, err := h.engine.ReceiveMessage(queueName, maxMessages, visibilityTimeout)
+	waitStr := params.Get("WaitTimeSeconds")
+	waitTimeSeconds := -1
+	if waitStr != "" {
+		v, err := strconv.Atoi(waitStr)
+		if err != nil || v < 0 || v > 20 {
+			query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Value for parameter WaitTimeSeconds is invalid. Reason: Must be between 0 and 20.")
+			return
+		}
+		waitTimeSeconds = v
+	}
+
+	if waitTimeSeconds < 0 {
+		wt, err := h.engine.GetQueueWaitTimeSeconds(queueName)
+		if err != nil {
+			writeQueueErrorXML(w, err)
+			return
+		}
+		waitTimeSeconds = wt
+	}
+
+	msgs, err := h.engine.ReceiveMessage(r.Context(), queueName, maxMessages, visibilityTimeout, waitTimeSeconds)
 	if err != nil {
 		writeQueueErrorXML(w, err)
 		return

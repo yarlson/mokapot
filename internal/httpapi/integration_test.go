@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/yarlson/devstack/internal/httpapi"
 	"github.com/yarlson/devstack/internal/sqs"
 )
@@ -253,4 +255,102 @@ func TestIntegration_MessageReappearsAfterVisibilityTimeout(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, recvOut3.Messages)
+}
+
+func TestIntegration_LongPolling_BlocksUntilMessageArrives(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("longpoll-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	var recvOut *awssqs.ReceiveMessageOutput
+	var recvErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		recvOut, recvErr = client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+			QueueUrl:            queueURL,
+			MaxNumberOfMessages: 1,
+			WaitTimeSeconds:     5,
+		})
+	}()
+
+	// Give the long poll time to register
+	time.Sleep(100 * time.Millisecond)
+
+	// Send a message — should wake the long poller
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    queueURL,
+		MessageBody: aws.String("long-polled message"),
+	})
+	require.NoError(t, err)
+
+	wg.Wait()
+	require.NoError(t, recvErr)
+	require.Len(t, recvOut.Messages, 1)
+	assert.Equal(t, "long-polled message", *recvOut.Messages[0].Body)
+}
+
+func TestIntegration_LongPolling_ReturnsImmediatelyWhenMessagesExist(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("longpoll-immediate-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send a message first
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    queueURL,
+		MessageBody: aws.String("already present"),
+	})
+	require.NoError(t, err)
+
+	// Long poll should return immediately since a message is available
+	start := time.Now()
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+		WaitTimeSeconds:     10,
+	})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	assert.Equal(t, "already present", *recvOut.Messages[0].Body)
+	assert.Less(t, elapsed, 2*time.Second, "should return immediately, not wait full WaitTimeSeconds")
+}
+
+func TestIntegration_LongPolling_TimesOut(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("longpoll-timeout-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	start := time.Now()
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+		WaitTimeSeconds:     1,
+	})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Empty(t, recvOut.Messages)
+	assert.GreaterOrEqual(t, elapsed, 900*time.Millisecond, "should wait close to WaitTimeSeconds")
 }
