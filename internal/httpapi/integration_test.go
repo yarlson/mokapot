@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -465,4 +467,212 @@ func TestIntegration_DelayedMessage_LongPollWakesOnDelayExpiry(t *testing.T) {
 	assert.Equal(t, "delay-then-poll", *recvOut.Messages[0].Body)
 	assert.GreaterOrEqual(t, elapsed, 900*time.Millisecond, "should wait for delay to expire")
 	assert.Less(t, elapsed, 4*time.Second, "should not wait full poll duration")
+}
+
+// --- Get/SetQueueAttributes tests ---
+
+func TestIntegration_GetQueueAttributes(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("attrs-queue"),
+	})
+	require.NoError(t, err)
+
+	out, err := client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       createOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameAll},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "30", out.Attributes["VisibilityTimeout"])
+	assert.Equal(t, "0", out.Attributes["DelaySeconds"])
+	assert.Contains(t, out.Attributes["QueueArn"], "attrs-queue")
+}
+
+func TestIntegration_SetQueueAttributes(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("set-attrs-queue"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.SetQueueAttributes(ctx, &awssqs.SetQueueAttributesInput{
+		QueueUrl: createOut.QueueUrl,
+		Attributes: map[string]string{
+			"VisibilityTimeout": "60",
+		},
+	})
+	require.NoError(t, err)
+
+	out, err := client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       createOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{"VisibilityTimeout"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "60", out.Attributes["VisibilityTimeout"])
+}
+
+// --- Dead-letter queue integration tests ---
+
+func TestIntegration_DLQ_MessageMovedAfterMaxReceiveCount(t *testing.T) {
+	client, ts, engine := newIntegrationSetup(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	now := time.Now()
+	engine.SetClock(func() time.Time { return now })
+
+	// Create source queue and DLQ
+	dlqOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("dlq-integration"),
+	})
+	require.NoError(t, err)
+
+	// Get DLQ ARN
+	dlqAttrs, err := client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       dlqOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	dlqARN := dlqAttrs.Attributes["QueueArn"]
+
+	sourceOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("source-integration"),
+	})
+	require.NoError(t, err)
+
+	// Set RedrivePolicy on source queue
+	rpJSON, _ := json.Marshal(map[string]any{
+		"deadLetterTargetArn": dlqARN,
+		"maxReceiveCount":     3,
+	})
+	_, err = client.SetQueueAttributes(ctx, &awssqs.SetQueueAttributesInput{
+		QueueUrl: sourceOut.QueueUrl,
+		Attributes: map[string]string{
+			"RedrivePolicy": string(rpJSON),
+		},
+	})
+	require.NoError(t, err)
+
+	// Send a message to the source queue
+	sendOut, err := client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    sourceOut.QueueUrl,
+		MessageBody: aws.String("poison message"),
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, *sendOut.MessageId)
+
+	// Receive 3 times without deleting
+	for i := 0; i < 3; i++ {
+		recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+			QueueUrl:            sourceOut.QueueUrl,
+			MaxNumberOfMessages: 1,
+			VisibilityTimeout:   1,
+		})
+		require.NoError(t, err)
+		require.Len(t, recvOut.Messages, 1)
+		assert.Equal(t, "poison message", *recvOut.Messages[0].Body)
+
+		// Advance clock past visibility timeout
+		now = now.Add(2 * time.Second)
+		engine.SetClock(func() time.Time { return now })
+	}
+
+	// Next receive should find source empty (message moved to DLQ)
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            sourceOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvOut.Messages)
+
+	// DLQ should have the message
+	dlqRecv, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            dlqOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, dlqRecv.Messages, 1)
+	assert.Equal(t, "poison message", *dlqRecv.Messages[0].Body)
+}
+
+func TestIntegration_DLQ_RedrivePolicy_InvalidDLQ(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("source-no-dlq"),
+	})
+	require.NoError(t, err)
+
+	rpJSON, _ := json.Marshal(map[string]any{
+		"deadLetterTargetArn": "arn:aws:sqs:eu-central-1:000000000000:nonexistent",
+		"maxReceiveCount":     3,
+	})
+
+	_, err = client.SetQueueAttributes(ctx, &awssqs.SetQueueAttributesInput{
+		QueueUrl: createOut.QueueUrl,
+		Attributes: map[string]string{
+			"RedrivePolicy": string(rpJSON),
+		},
+	})
+	assert.Error(t, err, "should fail when DLQ does not exist")
+}
+
+func TestIntegration_DLQ_GetRedrivePolicy(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	// Create DLQ first
+	dlqOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("dlq-get-policy"),
+	})
+	require.NoError(t, err)
+
+	dlqAttrs, err := client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       dlqOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	dlqARN := dlqAttrs.Attributes["QueueArn"]
+
+	// Create source and set RedrivePolicy
+	sourceOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("source-get-policy"),
+	})
+	require.NoError(t, err)
+
+	rpJSON, _ := json.Marshal(map[string]any{
+		"deadLetterTargetArn": dlqARN,
+		"maxReceiveCount":     5,
+	})
+	_, err = client.SetQueueAttributes(ctx, &awssqs.SetQueueAttributesInput{
+		QueueUrl: sourceOut.QueueUrl,
+		Attributes: map[string]string{
+			"RedrivePolicy": string(rpJSON),
+		},
+	})
+	require.NoError(t, err)
+
+	// GetQueueAttributes should include RedrivePolicy
+	attrs, err := client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       sourceOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameRedrivePolicy},
+	})
+	require.NoError(t, err)
+
+	rpStr, ok := attrs.Attributes["RedrivePolicy"]
+	assert.True(t, ok, "RedrivePolicy should be present")
+
+	var parsed map[string]any
+	err = json.Unmarshal([]byte(rpStr), &parsed)
+	require.NoError(t, err)
+	assert.Equal(t, dlqARN, parsed["deadLetterTargetArn"])
 }

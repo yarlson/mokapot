@@ -2,6 +2,7 @@ package sqs_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -620,4 +621,294 @@ func TestDelayedMessage_LongPollWakesWhenDelayExpires(t *testing.T) {
 	assert.Equal(t, "delayed-poll", received[0].Body)
 	assert.GreaterOrEqual(t, elapsed, 900*time.Millisecond, "should wait for delay to expire")
 	assert.Less(t, elapsed, 4*time.Second, "should not wait full poll duration")
+}
+
+// --- GetQueueAttributes / SetQueueAttributes tests ---
+
+func TestGetQueueAttributes_All(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	attrs, err := e.GetQueueAttributes("q", []string{"All"})
+	require.NoError(t, err)
+	assert.Equal(t, "30", attrs["VisibilityTimeout"])
+	assert.Equal(t, "0", attrs["DelaySeconds"])
+	assert.Contains(t, attrs["QueueArn"], "q")
+}
+
+func TestGetQueueAttributes_Specific(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	attrs, err := e.GetQueueAttributes("q", []string{"VisibilityTimeout"})
+	require.NoError(t, err)
+	assert.Equal(t, "30", attrs["VisibilityTimeout"])
+	assert.NotContains(t, attrs, "DelaySeconds")
+}
+
+func TestGetQueueAttributes_NonExistentQueue(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.GetQueueAttributes("nope", []string{"All"})
+	assert.ErrorIs(t, err, sqs.ErrQueueDoesNotExist)
+}
+
+func TestSetQueueAttributes(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	err = e.SetQueueAttributes("q", map[string]string{"VisibilityTimeout": "60"})
+	require.NoError(t, err)
+
+	attrs, err := e.GetQueueAttributes("q", []string{"VisibilityTimeout"})
+	require.NoError(t, err)
+	assert.Equal(t, "60", attrs["VisibilityTimeout"])
+}
+
+func TestSetQueueAttributes_NonExistentQueue(t *testing.T) {
+	e := newEngine()
+
+	err := e.SetQueueAttributes("nope", map[string]string{"VisibilityTimeout": "60"})
+	assert.ErrorIs(t, err, sqs.ErrQueueDoesNotExist)
+}
+
+func TestSetQueueAttributes_RedrivePolicy_ValidatesJSON(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	err = e.SetQueueAttributes("q", map[string]string{"RedrivePolicy": "not-json"})
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, sqs.ErrInvalidParameterValue)
+}
+
+func TestSetQueueAttributes_RedrivePolicy_ValidatesDLQExists(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("source")
+	require.NoError(t, err)
+
+	rp, _ := json.Marshal(map[string]any{
+		"deadLetterTargetArn": "arn:aws:sqs:eu-central-1:000000000000:nonexistent",
+		"maxReceiveCount":     3,
+	})
+
+	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, sqs.ErrInvalidParameterValue)
+}
+
+// --- Dead-letter queue tests ---
+
+func TestDLQ_MessageMovedAfterMaxReceiveCount(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	_, err := e.CreateQueue("source")
+	require.NoError(t, err)
+	dlq, err := e.CreateQueue("dlq")
+	require.NoError(t, err)
+
+	rp, _ := json.Marshal(map[string]any{
+		"deadLetterTargetArn": dlq.ARN,
+		"maxReceiveCount":     3,
+	})
+	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("source", "poison", -1)
+	require.NoError(t, err)
+
+	// Receive 3 times without deleting (visibility timeout = 0 so reappears immediately)
+	for i := 1; i <= 3; i++ {
+		received, err := e.ReceiveMessage(ctx, "source", 1, 0, 0)
+		require.NoError(t, err)
+		require.Len(t, received, 1)
+		assert.Equal(t, "poison", received[0].Body)
+		assert.Equal(t, i, received[0].ReceiveCount)
+	}
+
+	// Fourth receive attempt triggers DLQ move; source should be empty
+	received, err := e.ReceiveMessage(ctx, "source", 1, 0, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received, "message should have been moved to DLQ")
+
+	// Message should now be in the DLQ
+	dlqReceived, err := e.ReceiveMessage(ctx, "dlq", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, dlqReceived, 1)
+	assert.Equal(t, "poison", dlqReceived[0].Body)
+	// ReceiveCount preserved from source (3) + 1 for the failed attempt = 4, but
+	// the DLQ receive adds its own count. The message had receiveCount=4 when moved.
+	// AWS preserves the original receive count; DLQ receive increments it further.
+	assert.Equal(t, 5, dlqReceived[0].ReceiveCount)
+}
+
+func TestDLQ_OnlyPoisonMessageMoved(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	_, err := e.CreateQueue("source")
+	require.NoError(t, err)
+	dlq, err := e.CreateQueue("dlq")
+	require.NoError(t, err)
+
+	rp, _ := json.Marshal(map[string]any{
+		"deadLetterTargetArn": dlq.ARN,
+		"maxReceiveCount":     2,
+	})
+	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
+	require.NoError(t, err)
+
+	// Send two messages
+	_, err = e.SendMessage("source", "poison", -1)
+	require.NoError(t, err)
+	_, err = e.SendMessage("source", "healthy", -1)
+	require.NoError(t, err)
+
+	// Receive both, delete the healthy one, let the poison one reappear
+	received, err := e.ReceiveMessage(ctx, "source", 10, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 2)
+
+	for _, msg := range received {
+		if msg.Body == "healthy" {
+			err = e.DeleteMessage("source", msg.ReceiptHandle)
+			require.NoError(t, err)
+		}
+	}
+
+	// Receive again — only poison message. This is receive #2.
+	received, err = e.ReceiveMessage(ctx, "source", 10, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "poison", received[0].Body)
+	assert.Equal(t, 2, received[0].ReceiveCount)
+
+	// Receive again — receive count would exceed maxReceiveCount (2), so DLQ move.
+	received, err = e.ReceiveMessage(ctx, "source", 10, 0, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+
+	// Check DLQ
+	dlqReceived, err := e.ReceiveMessage(ctx, "dlq", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, dlqReceived, 1)
+	assert.Equal(t, "poison", dlqReceived[0].Body)
+}
+
+func TestDLQ_NoPolicyNoMove(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "msg", -1)
+	require.NoError(t, err)
+
+	// Receive 10 times without deleting — no DLQ, message keeps reappearing
+	for i := 1; i <= 10; i++ {
+		received, err := e.ReceiveMessage(ctx, "q", 1, 0, 0)
+		require.NoError(t, err)
+		require.Len(t, received, 1)
+		assert.Equal(t, i, received[0].ReceiveCount)
+	}
+}
+
+func TestDLQ_MaxReceiveCountOne(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	_, err := e.CreateQueue("source")
+	require.NoError(t, err)
+	dlq, err := e.CreateQueue("dlq")
+	require.NoError(t, err)
+
+	rp, _ := json.Marshal(map[string]any{
+		"deadLetterTargetArn": dlq.ARN,
+		"maxReceiveCount":     1,
+	})
+	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("source", "once", -1)
+	require.NoError(t, err)
+
+	// First receive succeeds
+	received, err := e.ReceiveMessage(ctx, "source", 1, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "once", received[0].Body)
+
+	// Second attempt triggers DLQ
+	received, err = e.ReceiveMessage(ctx, "source", 1, 0, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+
+	// DLQ has it
+	dlqReceived, err := e.ReceiveMessage(ctx, "dlq", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, dlqReceived, 1)
+	assert.Equal(t, "once", dlqReceived[0].Body)
+}
+
+func TestDLQ_VisibilityExpiryThenDLQ(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("source")
+	require.NoError(t, err)
+	dlq, err := e.CreateQueue("dlq")
+	require.NoError(t, err)
+
+	rp, _ := json.Marshal(map[string]any{
+		"deadLetterTargetArn": dlq.ARN,
+		"maxReceiveCount":     2,
+	})
+	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("source", "expire-then-dlq", -1)
+	require.NoError(t, err)
+
+	// Receive #1 with 5-second visibility
+	received, err := e.ReceiveMessage(ctx, "source", 1, 5, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+
+	// Advance past visibility timeout
+	now = now.Add(6 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Receive #2 (reappeared)
+	received, err = e.ReceiveMessage(ctx, "source", 1, 5, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, 2, received[0].ReceiveCount)
+
+	// Advance past visibility timeout again
+	now = now.Add(6 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Receive #3 should trigger DLQ move (receiveCount > 2)
+	received, err = e.ReceiveMessage(ctx, "source", 1, 5, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+
+	// Check DLQ
+	dlqReceived, err := e.ReceiveMessage(ctx, "dlq", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, dlqReceived, 1)
+	assert.Equal(t, "expire-then-dlq", dlqReceived[0].Body)
 }

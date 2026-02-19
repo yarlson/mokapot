@@ -9,6 +9,7 @@ import (
 var (
 	ErrQueueDoesNotExist      = errors.New("AWS.SimpleQueueService.NonExistentQueue")
 	ErrReceiptHandleIsInvalid = errors.New("ReceiptHandleIsInvalid")
+	ErrInvalidParameterValue  = errors.New("InvalidParameterValue")
 )
 
 func md5Hash(s string) string {

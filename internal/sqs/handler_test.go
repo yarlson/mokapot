@@ -234,3 +234,63 @@ func TestXML_SendMessage_InvalidDelaySeconds_Shape(t *testing.T) {
 	assert.Contains(t, body, "<Code>InvalidParameterValue</Code>")
 	assert.Contains(t, body, "<RequestId>")
 }
+
+// --- Golden response shape: GetQueueAttributes ---
+
+func TestXML_GetQueueAttributes_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=attr-queue")
+
+	rec := postQuery(h, "/000000000000/attr-queue", "Action=GetQueueAttributes&AttributeName.1=All")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<GetQueueAttributesResponse>")
+	assert.Contains(t, body, "<GetQueueAttributesResult>")
+	assert.Contains(t, body, "<Attribute>")
+	assert.Contains(t, body, "<Name>")
+	assert.Contains(t, body, "<Value>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_GetQueueAttributes_Specific_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=attr-specific-queue")
+
+	rec := postQuery(h, "/000000000000/attr-specific-queue", "Action=GetQueueAttributes&AttributeName.1=VisibilityTimeout")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<GetQueueAttributesResponse>")
+	assert.Contains(t, body, "<Name>VisibilityTimeout</Name>")
+	assert.Contains(t, body, "<Value>30</Value>")
+}
+
+// --- Golden response shape: SetQueueAttributes ---
+
+func TestXML_SetQueueAttributes_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=set-attr-queue")
+
+	rec := postQuery(h, "/000000000000/set-attr-queue", "Action=SetQueueAttributes&Attribute.1.Name=VisibilityTimeout&Attribute.1.Value=60")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<SetQueueAttributesResponse>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_SetQueueAttributes_MissingAttrs_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=set-attr-err-queue")
+
+	rec := postQuery(h, "/000000000000/set-attr-err-queue", "Action=SetQueueAttributes")
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>MissingParameter</Code>")
+	assert.Contains(t, body, "<RequestId>")
+}

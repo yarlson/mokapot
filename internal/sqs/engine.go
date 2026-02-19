@@ -2,13 +2,40 @@ package sqs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// redrivePolicy is the parsed form of a queue's RedrivePolicy attribute.
+type redrivePolicy struct {
+	DeadLetterTargetARN string `json:"deadLetterTargetArn"`
+	MaxReceiveCount     int    `json:"maxReceiveCount"`
+}
+
+// parseRedrivePolicy parses a RedrivePolicy JSON string.
+// Returns nil if the string is empty.
+func parseRedrivePolicy(s string) (*redrivePolicy, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var rp redrivePolicy
+	if err := json.Unmarshal([]byte(s), &rp); err != nil {
+		return nil, fmt.Errorf("invalid RedrivePolicy JSON: %w", err)
+	}
+	if rp.MaxReceiveCount < 1 {
+		return nil, fmt.Errorf("maxReceiveCount must be >= 1, got %d", rp.MaxReceiveCount)
+	}
+	if rp.DeadLetterTargetARN == "" {
+		return nil, fmt.Errorf("deadLetterTargetArn is required")
+	}
+	return &rp, nil
+}
 
 // Message represents an SQS message in the engine.
 type Message struct {
@@ -163,6 +190,120 @@ func (e *Engine) GetQueueWaitTimeSeconds(name string) (int, error) {
 	return wt, nil
 }
 
+// queueByARN returns a queue by its ARN. Must be called with e.mu held (read or write).
+func (e *Engine) queueByARN(arn string) *Queue {
+	for _, q := range e.queues {
+		if q.ARN == arn {
+			return q
+		}
+	}
+	return nil
+}
+
+// GetQueueAttributes returns the requested attributes for a queue.
+// If attrNames contains "All", all attributes are returned.
+func (e *Engine) GetQueueAttributes(queueName string, attrNames []string) (map[string]string, error) {
+	e.mu.RLock()
+	q, exists := e.queues[queueName]
+	e.mu.RUnlock()
+
+	if !exists {
+		return nil, ErrQueueDoesNotExist
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	all := false
+	for _, n := range attrNames {
+		if n == "All" {
+			all = true
+			break
+		}
+	}
+
+	result := make(map[string]string)
+	if all {
+		for k, v := range q.Attributes {
+			result[k] = v
+		}
+	} else {
+		for _, n := range attrNames {
+			if v, ok := q.Attributes[n]; ok {
+				result[n] = v
+			}
+		}
+	}
+	return result, nil
+}
+
+// mutableAttributes defines which queue attributes can be set via SetQueueAttributes.
+var mutableAttributes = map[string]bool{
+	"VisibilityTimeout":             true,
+	"ReceiveMessageWaitTimeSeconds": true,
+	"DelaySeconds":                  true,
+	"MessageRetentionPeriod":        true,
+	"RedrivePolicy":                 true,
+}
+
+// numericAttributeRanges defines valid ranges for numeric queue attributes.
+var numericAttributeRanges = map[string][2]int{
+	"VisibilityTimeout":             {0, 43200},
+	"ReceiveMessageWaitTimeSeconds": {0, 20},
+	"DelaySeconds":                  {0, 900},
+	"MessageRetentionPeriod":        {60, 1209600},
+}
+
+// SetQueueAttributes sets attributes on a queue.
+func (e *Engine) SetQueueAttributes(queueName string, attrs map[string]string) error {
+	e.mu.RLock()
+	q, exists := e.queues[queueName]
+	e.mu.RUnlock()
+
+	if !exists {
+		return ErrQueueDoesNotExist
+	}
+
+	// Validate all attribute keys are mutable.
+	for k := range attrs {
+		if !mutableAttributes[k] {
+			return fmt.Errorf("%w: %s is not a settable attribute", ErrInvalidParameterValue, k)
+		}
+	}
+
+	// Validate numeric attributes.
+	for attr, bounds := range numericAttributeRanges {
+		if v, ok := attrs[attr]; ok {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < bounds[0] || n > bounds[1] {
+				return fmt.Errorf("%w: Value for parameter %s is invalid. Reason: Must be between %d and %d", ErrInvalidParameterValue, attr, bounds[0], bounds[1])
+			}
+		}
+	}
+
+	// Validate RedrivePolicy if present.
+	if rpJSON, ok := attrs["RedrivePolicy"]; ok {
+		rp, err := parseRedrivePolicy(rpJSON)
+		if err != nil {
+			return fmt.Errorf("%w: RedrivePolicy: %s", ErrInvalidParameterValue, err)
+		}
+		// Verify the DLQ target exists
+		e.mu.RLock()
+		dlq := e.queueByARN(rp.DeadLetterTargetARN)
+		e.mu.RUnlock()
+		if dlq == nil {
+			return fmt.Errorf("%w: deadLetterTargetArn %s does not exist", ErrInvalidParameterValue, rp.DeadLetterTargetARN)
+		}
+	}
+
+	q.mu.Lock()
+	for k, v := range attrs {
+		q.Attributes[k] = v
+	}
+	q.mu.Unlock()
+	return nil
+}
+
 // SendMessage adds a message to a queue.
 // delaySeconds overrides the queue-level DelaySeconds. Pass -1 to use the queue default.
 //
@@ -276,7 +417,7 @@ func (e *Engine) ReceiveMessage(ctx context.Context, queueName string, maxMessag
 	}
 
 	// Try to receive immediately.
-	result := receiveFromQueue(q, maxMessages, visibilityTimeout, nowFn)
+	result := e.receiveFromQueue(q, maxMessages, visibilityTimeout, nowFn)
 	if len(result) > 0 || waitTimeSeconds <= 0 {
 		return result, nil
 	}
@@ -333,7 +474,7 @@ func (e *Engine) ReceiveMessage(ctx context.Context, queueName string, maxMessag
 		case <-timer.C:
 		}
 
-		result = receiveFromQueue(q, maxMessages, visibilityTimeout, nowFn)
+		result = e.receiveFromQueue(q, maxMessages, visibilityTimeout, nowFn)
 		if len(result) > 0 {
 			return result, nil
 		}
@@ -346,11 +487,18 @@ func (e *Engine) ReceiveMessage(ctx context.Context, queueName string, maxMessag
 }
 
 // receiveFromQueue attempts to dequeue messages from a queue without blocking.
-func receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, nowFn func() time.Time) []*Message {
+// If a RedrivePolicy is configured and a message exceeds maxReceiveCount,
+// it is moved to the dead-letter queue instead of being returned.
+func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, nowFn func() time.Time) []*Message {
 	now := nowFn()
 
 	q.mu.Lock()
-	defer q.mu.Unlock()
+
+	// Parse RedrivePolicy under the queue lock.
+	rp, rpErr := parseRedrivePolicy(q.Attributes["RedrivePolicy"])
+	if rpErr != nil {
+		slog.Warn("invalid RedrivePolicy on queue, ignoring", "queue", q.Name, "err", rpErr)
+	}
 
 	// Requeue expired inflight messages
 	for handle, msg := range q.inflight {
@@ -362,6 +510,7 @@ func receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, nowFn func()
 	}
 
 	var result []*Message
+	var dlqMessages []*Message
 	remaining := make([]*Message, 0, len(q.available))
 
 	for _, msg := range q.available {
@@ -381,6 +530,12 @@ func receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, nowFn func()
 			msg.FirstReceivedAt = now.UnixMilli()
 		}
 
+		// Check DLQ threshold: if receive count exceeds maxReceiveCount, move to DLQ.
+		if rp != nil && msg.ReceiveCount > rp.MaxReceiveCount {
+			dlqMessages = append(dlqMessages, msg)
+			continue
+		}
+
 		handle := uuid.New().String()
 		msg.ReceiptHandle = handle
 		msg.InvisibleUntil = now.Add(time.Duration(visibilityTimeout) * time.Second)
@@ -390,7 +545,44 @@ func receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, nowFn func()
 	}
 
 	q.available = remaining
+
+	// Unlock source queue before touching the DLQ to avoid lock ordering issues.
+	if len(dlqMessages) > 0 {
+		q.mu.Unlock()
+		e.moveToDLQ(rp.DeadLetterTargetARN, dlqMessages, now)
+	} else {
+		q.mu.Unlock()
+	}
+
 	return result
+}
+
+// moveToDLQ enqueues messages into the dead-letter queue identified by ARN.
+func (e *Engine) moveToDLQ(dlqARN string, messages []*Message, now time.Time) {
+	e.mu.RLock()
+	dlq := e.queueByARN(dlqARN)
+	e.mu.RUnlock()
+
+	if dlq == nil {
+		ids := make([]string, len(messages))
+		for i, m := range messages {
+			ids[i] = m.MessageID
+		}
+		slog.Warn("DLQ not found, dropping messages", "dlqArn", dlqARN, "count", len(messages), "messageIds", ids)
+		return
+	}
+
+	dlq.mu.Lock()
+	for _, msg := range messages {
+		// Reset inflight state; preserve body, attributes, and receive count.
+		msg.ReceiptHandle = ""
+		msg.InvisibleUntil = time.Time{}
+		msg.AvailableAt = time.Time{}
+		dlq.available = append(dlq.available, msg)
+		slog.Info("message moved to DLQ", "messageId", msg.MessageID, "dlq", dlq.Name, "receiveCount", msg.ReceiveCount)
+	}
+	dlq.notifyWaiters()
+	dlq.mu.Unlock()
 }
 
 // DeleteMessage removes an inflight message by receipt handle.

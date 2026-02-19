@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -59,6 +61,10 @@ func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request, pathQueueNa
 		h.createQueueJSON(w, raw)
 	case "GetQueueUrl":
 		h.getQueueURLJSON(w, raw)
+	case "GetQueueAttributes":
+		h.getQueueAttributesJSON(w, raw, pathQueueName)
+	case "SetQueueAttributes":
+		h.setQueueAttributesJSON(w, raw, pathQueueName)
 	case "SendMessage":
 		h.sendMessageJSON(w, raw, pathQueueName)
 	case "ReceiveMessage":
@@ -116,9 +122,24 @@ func writeJSONQueueError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "AWS.SimpleQueueService.NonExistentQueue", "The specified queue does not exist.")
 	case errors.Is(err, ErrReceiptHandleIsInvalid):
 		writeJSONError(w, http.StatusBadRequest, "ReceiptHandleIsInvalid", "The input receipt handle is invalid.")
+	case errors.Is(err, ErrInvalidParameterValue):
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", sanitizeErrorMessage(err))
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "InternalError", "An internal error occurred.")
 	}
+}
+
+// sanitizeErrorMessage strips the sentinel error prefix from wrapped errors,
+// returning only the descriptive suffix. This avoids leaking internal error
+// chains (e.g. JSON parse details) to API callers.
+func sanitizeErrorMessage(err error) string {
+	msg := err.Error()
+	// Wrapped errors look like "InvalidParameterValue: actual message".
+	// Strip the sentinel prefix to return just the meaningful part.
+	if idx := strings.Index(msg, ": "); idx >= 0 {
+		return msg[idx+2:]
+	}
+	return msg
 }
 
 func (h *Handler) createQueueJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
@@ -151,6 +172,79 @@ func (h *Handler) getQueueURLJSON(w http.ResponseWriter, raw map[string]json.Raw
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"QueueUrl": url})
+}
+
+func jsonStringSlice(raw map[string]json.RawMessage, key string) []string {
+	v, ok := raw[key]
+	if !ok {
+		return nil
+	}
+	var s []string
+	if err := json.Unmarshal(v, &s); err != nil {
+		return nil
+	}
+	return s
+}
+
+func jsonStringMap(raw map[string]json.RawMessage, key string) map[string]string {
+	v, ok := raw[key]
+	if !ok {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(v, &m); err != nil {
+		return nil
+	}
+	return m
+}
+
+func (h *Handler) getQueueAttributesJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
+	queueName := pathQueueName
+	if queueName == "" {
+		queueName = queueNameFromURL(jsonString(raw, "QueueUrl"))
+	}
+	if queueName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	attrNames := jsonStringSlice(raw, "AttributeNames")
+	if attrNames == nil {
+		attrNames = []string{"All"}
+	}
+
+	attrs, err := h.engine.GetQueueAttributes(queueName, attrNames)
+	if err != nil {
+		writeJSONQueueError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"Attributes": attrs})
+}
+
+func (h *Handler) setQueueAttributesJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
+	queueName := pathQueueName
+	if queueName == "" {
+		queueName = queueNameFromURL(jsonString(raw, "QueueUrl"))
+	}
+	if queueName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	attrs := jsonStringMap(raw, "Attributes")
+	if len(attrs) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "MissingParameter", "The request must contain the parameter Attributes.")
+		return
+	}
+
+	err := h.engine.SetQueueAttributes(queueName, attrs)
+	if err != nil {
+		writeJSONQueueError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
 func queueNameFromURL(queueURL string) string {
@@ -327,6 +421,10 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request, pathQueueN
 		h.createQueueXML(w, params)
 	case "GetQueueUrl":
 		h.getQueueURLXML(w, params)
+	case "GetQueueAttributes":
+		h.getQueueAttributesXML(w, params, pathQueueName)
+	case "SetQueueAttributes":
+		h.setQueueAttributesXML(w, params, pathQueueName)
 	case "SendMessage":
 		h.sendMessageXML(w, params, pathQueueName)
 	case "ReceiveMessage":
@@ -394,6 +492,93 @@ func (h *Handler) getQueueURLXML(w http.ResponseWriter, params query.Params) {
 
 	query.WriteXML(w, http.StatusOK, getQueueURLXMLResponse{
 		Result:   getQueueURLXMLResult{QueueURL: url},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+type getQueueAttributesXMLResponse struct {
+	XMLName  xml.Name                    `xml:"GetQueueAttributesResponse"`
+	Result   getQueueAttributesXMLResult `xml:"GetQueueAttributesResult"`
+	Metadata query.ResponseMetadata
+}
+
+type getQueueAttributesXMLResult struct {
+	Attributes []xmlQueueAttribute `xml:"Attribute,omitempty"`
+}
+
+type xmlQueueAttribute struct {
+	Name  string `xml:"Name"`
+	Value string `xml:"Value"`
+}
+
+func (h *Handler) getQueueAttributesXML(w http.ResponseWriter, params query.Params, queueName string) {
+	if queueName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	var attrNames []string
+	for i := 1; ; i++ {
+		name := params.Get(fmt.Sprintf("AttributeName.%d", i))
+		if name == "" {
+			break
+		}
+		attrNames = append(attrNames, name)
+	}
+	if len(attrNames) == 0 {
+		attrNames = []string{"All"}
+	}
+
+	attrs, err := h.engine.GetQueueAttributes(queueName, attrNames)
+	if err != nil {
+		writeQueueErrorXML(w, err)
+		return
+	}
+
+	var xmlAttrs []xmlQueueAttribute
+	for k, v := range attrs {
+		xmlAttrs = append(xmlAttrs, xmlQueueAttribute{Name: k, Value: v})
+	}
+	sort.Slice(xmlAttrs, func(i, j int) bool { return xmlAttrs[i].Name < xmlAttrs[j].Name })
+
+	query.WriteXML(w, http.StatusOK, getQueueAttributesXMLResponse{
+		Result:   getQueueAttributesXMLResult{Attributes: xmlAttrs},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+type setQueueAttributesXMLResponse struct {
+	XMLName  xml.Name `xml:"SetQueueAttributesResponse"`
+	Metadata query.ResponseMetadata
+}
+
+func (h *Handler) setQueueAttributesXML(w http.ResponseWriter, params query.Params, queueName string) {
+	if queueName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	attrs := make(map[string]string)
+	for i := 1; ; i++ {
+		name := params.Get(fmt.Sprintf("Attribute.%d.Name", i))
+		if name == "" {
+			break
+		}
+		value := params.Get(fmt.Sprintf("Attribute.%d.Value", i))
+		attrs[name] = value
+	}
+	if len(attrs) == 0 {
+		query.WriteError(w, http.StatusBadRequest, "MissingParameter", "The request must contain the parameter Attributes.")
+		return
+	}
+
+	err := h.engine.SetQueueAttributes(queueName, attrs)
+	if err != nil {
+		writeQueueErrorXML(w, err)
+		return
+	}
+
+	query.WriteXML(w, http.StatusOK, setQueueAttributesXMLResponse{
 		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
 	})
 }
@@ -587,6 +772,8 @@ func writeQueueErrorXML(w http.ResponseWriter, err error) {
 		query.WriteError(w, http.StatusBadRequest, "AWS.SimpleQueueService.NonExistentQueue", "The specified queue does not exist.")
 	case errors.Is(err, ErrReceiptHandleIsInvalid):
 		query.WriteError(w, http.StatusBadRequest, "ReceiptHandleIsInvalid", "The input receipt handle is invalid.")
+	case errors.Is(err, ErrInvalidParameterValue):
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", sanitizeErrorMessage(err))
 	default:
 		query.WriteError(w, http.StatusInternalServerError, "InternalError", "An internal error occurred.")
 	}
