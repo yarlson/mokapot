@@ -32,4 +32,6 @@
 
 **Inflight** — a message currently held by a consumer (after receive, before delete or visibility expiry)
 
+**PurgeQueue** — removes all messages (available, inflight, delayed) from a queue; AWS enforces a 60-second cooldown between purges (PurgeQueueInProgress error)
+
 **bbolt** — embedded key-value store used as optional persistence backend (`DATA_DIR/state.db`)

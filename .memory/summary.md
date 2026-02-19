@@ -23,18 +23,17 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 
 ### SQS
 
-- Queue CRUD (CreateQueue, DeleteQueue, ListQueues, GetQueueUrl)
-- Queue attributes (Get/SetQueueAttributes)
+- Queue creation: CreateQueue (idempotent), GetQueueUrl
+- Queue attributes: Get/SetQueueAttributes
 - Message lifecycle: SendMessage, ReceiveMessage, DeleteMessage
 - Batch operations: SendMessageBatch, DeleteMessageBatch (with partial failure, duplicate ID detection, batch size validation)
 - Visibility timeout with automatic reappearance
 - Long polling (WaitTimeSeconds)
 - Delayed messages (DelaySeconds)
 - Dead-letter queue with RedrivePolicy
-- PurgeQueue
-- ChangeMessageVisibility
+- PurgeQueue (60-second cooldown)
 
-### SNS
+### SNS (planned, not yet implemented)
 
 - Topic CRUD (CreateTopic, DeleteTopic, ListTopics, Get/SetTopicAttributes)
 - Subscriptions (Subscribe, Unsubscribe, ListSubscriptionsByTopic, Get/SetSubscriptionAttributes)
@@ -66,7 +65,7 @@ SQS core message lifecycle is operational. SNS is not yet implemented.
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 
-**Not yet implemented:** ListQueues response, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS, persistence
+**Not yet implemented:** DeleteQueue, ListQueues, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS, persistence
 
 ## Tech Stack
 
