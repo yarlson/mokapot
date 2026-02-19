@@ -10,12 +10,18 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/yarlson/mokapot/internal/httpapi"
+	"github.com/yarlson/mokapot/internal/sns"
 	"github.com/yarlson/mokapot/internal/sqs"
 )
 
 func newTestServer() http.Handler {
-	engine := sqs.NewEngine("us-east-1", "000000000000", "localhost:4566")
-	return httpapi.NewServer(sqs.NewHandler(engine))
+	sqsEngine := sqs.NewEngine("us-east-1", "000000000000", "localhost:4566")
+	enqueue := func(queueName, body string) error {
+		_, err := sqsEngine.SendMessage(queueName, body, 0)
+		return err
+	}
+	snsEngine := sns.NewEngine("us-east-1", "000000000000", enqueue)
+	return httpapi.NewServer(sqs.NewHandler(sqsEngine), sns.NewHandler(snsEngine))
 }
 
 func TestHealthEndpoint(t *testing.T) {

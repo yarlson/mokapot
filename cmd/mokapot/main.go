@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yarlson/mokapot/internal/httpapi"
+	"github.com/yarlson/mokapot/internal/sns"
 	"github.com/yarlson/mokapot/internal/sqs"
 )
 
@@ -28,12 +29,19 @@ func main() {
 	slog.SetDefault(logger)
 
 	host := fmt.Sprintf("%s:%s", hostname, port)
-	engine := sqs.NewEngine(region, accountID, host)
-	sqsHandler := sqs.NewHandler(engine)
+	sqsEngine := sqs.NewEngine(region, accountID, host)
+	sqsHandler := sqs.NewHandler(sqsEngine)
+
+	enqueue := func(queueName, body string) error {
+		_, err := sqsEngine.SendMessage(queueName, body, 0)
+		return err
+	}
+	snsEngine := sns.NewEngine(region, accountID, enqueue)
+	snsHandler := sns.NewHandler(snsEngine)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           httpapi.NewServer(sqsHandler),
+		Handler:           httpapi.NewServer(sqsHandler, snsHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,

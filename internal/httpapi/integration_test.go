@@ -11,12 +11,14 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	awssns "github.com/aws/aws-sdk-go-v2/service/sns"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/yarlson/mokapot/internal/httpapi"
+	"github.com/yarlson/mokapot/internal/sns"
 	"github.com/yarlson/mokapot/internal/sqs"
 )
 
@@ -24,12 +26,20 @@ func newIntegrationSetup(t *testing.T) (*awssqs.Client, *httptest.Server, *sqs.E
 	t.Helper()
 
 	// Use a placeholder host; replaced below once the test server starts.
-	engine := sqs.NewEngine("eu-central-1", "000000000000", "placeholder")
-	handler := sqs.NewHandler(engine)
-	ts := httptest.NewServer(httpapi.NewServer(handler))
+	sqsEngine := sqs.NewEngine("eu-central-1", "000000000000", "placeholder")
+	sqsHandler := sqs.NewHandler(sqsEngine)
+
+	enqueue := func(queueName, body string) error {
+		_, err := sqsEngine.SendMessage(queueName, body, 0)
+		return err
+	}
+	snsEngine := sns.NewEngine("eu-central-1", "000000000000", enqueue)
+	snsHandler := sns.NewHandler(snsEngine)
+
+	ts := httptest.NewServer(httpapi.NewServer(sqsHandler, snsHandler))
 
 	// Update the engine host so generated queue URLs point at the test server.
-	engine.SetHost(ts.Listener.Addr().String())
+	sqsEngine.SetHost(ts.Listener.Addr().String())
 
 	client := awssqs.New(awssqs.Options{
 		Region:       "eu-central-1",
@@ -37,7 +47,7 @@ func newIntegrationSetup(t *testing.T) (*awssqs.Client, *httptest.Server, *sqs.E
 		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
 	})
 
-	return client, ts, engine
+	return client, ts, sqsEngine
 }
 
 func newIntegrationClient(t *testing.T) (*awssqs.Client, *httptest.Server) {
@@ -1054,4 +1064,329 @@ func TestIntegration_PurgeQueue_CooldownEnforced(t *testing.T) {
 		QueueUrl: queueURL,
 	})
 	require.NoError(t, err)
+}
+
+// --- SNS integration tests ---
+
+type snsIntegrationSetup struct {
+	sqsClient *awssqs.Client
+	snsClient *awssns.Client
+	server    *httptest.Server
+	sqsEngine *sqs.Engine
+}
+
+func newSNSIntegrationSetup(t *testing.T) *snsIntegrationSetup {
+	t.Helper()
+
+	sqsEngine := sqs.NewEngine("eu-central-1", "000000000000", "placeholder")
+	sqsHandler := sqs.NewHandler(sqsEngine)
+
+	enqueue := func(queueName, body string) error {
+		_, err := sqsEngine.SendMessage(queueName, body, 0)
+		return err
+	}
+	snsEngine := sns.NewEngine("eu-central-1", "000000000000", enqueue)
+	snsHandler := sns.NewHandler(snsEngine)
+
+	ts := httptest.NewServer(httpapi.NewServer(sqsHandler, snsHandler))
+	sqsEngine.SetHost(ts.Listener.Addr().String())
+
+	sqsClient := awssqs.New(awssqs.Options{
+		Region:       "eu-central-1",
+		BaseEndpoint: aws.String(ts.URL),
+		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
+	})
+
+	snsClient := awssns.New(awssns.Options{
+		Region:       "eu-central-1",
+		BaseEndpoint: aws.String(ts.URL),
+		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
+	})
+
+	return &snsIntegrationSetup{
+		sqsClient: sqsClient,
+		snsClient: snsClient,
+		server:    ts,
+		sqsEngine: sqsEngine,
+	}
+}
+
+func TestIntegration_SNS_CreateTopic(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	out, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("test-topic"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out.TopicArn)
+	assert.Contains(t, *out.TopicArn, "test-topic")
+	assert.Contains(t, *out.TopicArn, "arn:aws:sns:eu-central-1:000000000000:test-topic")
+}
+
+func TestIntegration_SNS_CreateTopicIdempotent(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	out1, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("idempotent-topic"),
+	})
+	require.NoError(t, err)
+
+	out2, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("idempotent-topic"),
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, *out1.TopicArn, *out2.TopicArn)
+}
+
+func TestIntegration_SNS_Subscribe(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("sub-topic"),
+	})
+	require.NoError(t, err)
+
+	// Create SQS queue
+	queueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("sub-queue"),
+	})
+	require.NoError(t, err)
+
+	// Get queue ARN
+	attrOut, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queueARN := attrOut.Attributes["QueueArn"]
+
+	// Subscribe
+	subOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, subOut.SubscriptionArn)
+	assert.Contains(t, *subOut.SubscriptionArn, *topicOut.TopicArn)
+}
+
+func TestIntegration_SNS_PublishFanout(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("fanout-topic"),
+	})
+	require.NoError(t, err)
+
+	// Create two SQS queues
+	queue1Out, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("fanout-queue-1"),
+	})
+	require.NoError(t, err)
+
+	queue2Out, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("fanout-queue-2"),
+	})
+	require.NoError(t, err)
+
+	// Get queue ARNs
+	attr1, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queue1Out.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queue1ARN := attr1.Attributes["QueueArn"]
+
+	attr2, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queue2Out.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queue2ARN := attr2.Attributes["QueueArn"]
+
+	// Subscribe both queues
+	_, err = s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queue1ARN),
+	})
+	require.NoError(t, err)
+
+	_, err = s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queue2ARN),
+	})
+	require.NoError(t, err)
+
+	// Publish a message
+	pubOut, err := s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("fanout message"),
+		Subject:  aws.String("Test Subject"),
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, *pubOut.MessageId)
+
+	// Both queues should receive the message
+	recv1, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queue1Out.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recv1.Messages, 1)
+
+	recv2, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queue2Out.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recv2.Messages, 1)
+
+	// Verify both messages contain SNS envelope
+	for _, msgs := range [][]*string{
+		{recv1.Messages[0].Body},
+		{recv2.Messages[0].Body},
+	} {
+		var envelope map[string]string
+		err = json.Unmarshal([]byte(*msgs[0]), &envelope)
+		require.NoError(t, err)
+		assert.Equal(t, "Notification", envelope["Type"])
+		assert.Equal(t, *pubOut.MessageId, envelope["MessageId"])
+		assert.Equal(t, *topicOut.TopicArn, envelope["TopicArn"])
+		assert.Equal(t, "fanout message", envelope["Message"])
+		assert.Equal(t, "Test Subject", envelope["Subject"])
+		assert.NotEmpty(t, envelope["Timestamp"])
+	}
+}
+
+func TestIntegration_SNS_PublishSingleQueue(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("single-topic"),
+	})
+	require.NoError(t, err)
+
+	// Create SQS queue
+	queueOut, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("single-queue"),
+	})
+	require.NoError(t, err)
+
+	// Get queue ARN
+	attrOut, err := s.sqsClient.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       queueOut.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	queueARN := attrOut.Attributes["QueueArn"]
+
+	// Subscribe
+	_, err = s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+
+	// Publish
+	pubOut, err := s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("hello SNS"),
+	})
+	require.NoError(t, err)
+
+	// Receive from SQS queue
+	recvOut, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+
+	// Verify envelope
+	var envelope map[string]string
+	err = json.Unmarshal([]byte(*recvOut.Messages[0].Body), &envelope)
+	require.NoError(t, err)
+	assert.Equal(t, "Notification", envelope["Type"])
+	assert.Equal(t, *pubOut.MessageId, envelope["MessageId"])
+	assert.Equal(t, "hello SNS", envelope["Message"])
+
+	// Delete the message to confirm full lifecycle
+	_, err = s.sqsClient.DeleteMessage(ctx, &awssqs.DeleteMessageInput{
+		QueueUrl:      queueOut.QueueUrl,
+		ReceiptHandle: recvOut.Messages[0].ReceiptHandle,
+	})
+	require.NoError(t, err)
+
+	// Queue should be empty
+	recvOut2, err := s.sqsClient.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvOut2.Messages)
+}
+
+func TestIntegration_SNS_PublishNoSubscribers(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create topic with no subscribers
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{
+		Name: aws.String("empty-topic"),
+	})
+	require.NoError(t, err)
+
+	// Publish should succeed even with no subscribers
+	pubOut, err := s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: topicOut.TopicArn,
+		Message:  aws.String("to nobody"),
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, *pubOut.MessageId)
+}
+
+func TestIntegration_SNS_PublishTopicNotFound(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	_, err := s.snsClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: aws.String("arn:aws:sns:eu-central-1:000000000000:nonexistent"),
+		Message:  aws.String("hello"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "NotFound")
+}
+
+func TestIntegration_SNS_SubscribeTopicNotFound(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	_, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: aws.String("arn:aws:sns:eu-central-1:000000000000:nonexistent"),
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String("arn:aws:sqs:eu-central-1:000000000000:q"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "NotFound")
 }
