@@ -53,6 +53,8 @@ SQS core message lifecycle is operational. SNS is not yet implemented.
 - SQS queue CRUD: CreateQueue (idempotent), GetQueueUrl, SendMessage, ReceiveMessage, DeleteMessage
 - Dual protocol support: AWS Query/XML and AWS JSON 1.0 (Go/JS SDK v3)
 - In-memory queue engine with per-queue mutex, visibility timeout, receipt handle tracking
+- Visibility timeout with automatic reappearance: expired inflight messages return to available pool with new receipt handles and incremented ReceiveCount
+- Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 
 **Not yet implemented:** ListQueues response, batch operations, long polling, delayed messages, DLQ, PurgeQueue, ChangeMessageVisibility, SNS, persistence

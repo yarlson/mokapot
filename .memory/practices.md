@@ -27,6 +27,7 @@
 - Unit tests use `testify` (assert + require)
 - Golden response shape tests for each action (verify XML structure, required fields, error shapes)
 - Node.js and PHP SDK tests for final validation, not primary feedback loop
+- **Deterministic time in tests**: use `Engine.SetClock` to inject a controllable clock; advance time by mutating the closure — never use `time.Sleep` in tests
 
 ## Project Structure
 
@@ -49,10 +50,11 @@ All via environment variables (optional, with defaults):
 
 ## Concurrency Model
 
-- Per-queue mutex guarding: available deque, inflight map, delayed heap, waiter list
-- Global scheduler goroutine wakes at next deadline across all queues
+- Per-queue mutex guarding: available slice, inflight map, delayed heap (planned), waiter list (planned)
+- Visibility reappearance is **lazy**: expired inflight messages are requeued at the start of each `ReceiveMessage` call (no background goroutine)
+- Global scheduler goroutine wakes at next deadline across all queues (planned, for long polling)
 - No per-message goroutine timers (avoid goroutine explosion)
-- Waiters use channels with deadlines, notified on availability changes
+- Waiters use channels with deadlines, notified on availability changes (planned)
 
 ## Error Handling
 

@@ -36,7 +36,9 @@ Query Parser (internal/query/query.go)
   │   SQS Engine (internal/sqs/engine.go)
   │     │ — in-memory queue store (map[string]*Queue)
   │     │ — per-queue: available []*Message, inflight map
-  │     │ — visibility timeout, receipt handle tracking
+  │     │ — visibility timeout with lazy reappearance on ReceiveMessage
+  │     │ — receipt handle regeneration + ReceiveCount tracking
+  │     │ — injectable clock (now func() time.Time)
   │     │ — thread-safe via sync.RWMutex + per-queue sync.Mutex
   │
   ├─▶ Store Interface (planned: internal/store/)
@@ -58,7 +60,7 @@ Query Parser (internal/query/query.go)
 1  Service boots ✓
 │
 2  Send + receive + delete ✓  ← foundation
-├── 3  Visibility timeout (basic impl in engine, no ChangeMessageVisibility action yet)
+├── 3  Visibility timeout ✓ (reappearance + receipt handle invalidation; no ChangeMessageVisibility action yet)
 │   ├── 4  Long polling
 │   ├── 6  Dead-letter queue
 │   └── 12 Change visibility
@@ -80,6 +82,7 @@ Query Parser (internal/query/query.go)
 - **Only `sqs` protocol** for SNS subscriptions
 - **No FIFO queues** by default (scope undefined, deferred)
 - **No per-message goroutine timers** — global scheduler with deadline heap
+- **Injectable clock** — `Engine.now` field (`func() time.Time`) defaults to `time.Now`; overridable via `SetClock` for deterministic tests without `time.Sleep`
 - **Dual protocol in handler** — Content-Type `application/x-amz-json-1.0` triggers JSON path (Go/JS SDK v3); form-encoded triggers Query/XML path (PHP/older SDKs)
 
 ## Docker
