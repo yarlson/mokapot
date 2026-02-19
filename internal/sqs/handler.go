@@ -75,6 +75,8 @@ func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request, pathQueueNa
 		h.sendMessageBatchJSON(w, raw, pathQueueName)
 	case "DeleteMessageBatch":
 		h.deleteMessageBatchJSON(w, raw, pathQueueName)
+	case "PurgeQueue":
+		h.purgeQueueJSON(w, raw, pathQueueName)
 	default:
 		writeJSONError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not valid for this endpoint.")
 	}
@@ -132,6 +134,8 @@ func writeJSONQueueError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "AWS.SimpleQueueService.TooManyEntriesInBatchRequest", sanitizeErrorMessage(err))
 	case errors.Is(err, ErrBatchEntryIdsNotDistinct):
 		writeJSONError(w, http.StatusBadRequest, "AWS.SimpleQueueService.BatchEntryIdsNotDistinct", sanitizeErrorMessage(err))
+	case errors.Is(err, ErrPurgeQueueInProgress):
+		writeJSONError(w, http.StatusForbidden, "AWS.SimpleQueueService.PurgeQueueInProgress", "Only one PurgeQueue operation is allowed every 60 seconds.")
 	case errors.Is(err, ErrInvalidParameterValue):
 		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", sanitizeErrorMessage(err))
 	default:
@@ -445,6 +449,8 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request, pathQueueN
 		h.sendMessageBatchXML(w, params, pathQueueName)
 	case "DeleteMessageBatch":
 		h.deleteMessageBatchXML(w, params, pathQueueName)
+	case "PurgeQueue":
+		h.purgeQueueXML(w, params, pathQueueName)
 	default:
 		query.WriteError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not valid for this endpoint.")
 	}
@@ -792,6 +798,8 @@ func writeQueueErrorXML(w http.ResponseWriter, err error) {
 		query.WriteError(w, http.StatusBadRequest, "AWS.SimpleQueueService.TooManyEntriesInBatchRequest", sanitizeErrorMessage(err))
 	case errors.Is(err, ErrBatchEntryIdsNotDistinct):
 		query.WriteError(w, http.StatusBadRequest, "AWS.SimpleQueueService.BatchEntryIdsNotDistinct", sanitizeErrorMessage(err))
+	case errors.Is(err, ErrPurgeQueueInProgress):
+		query.WriteError(w, http.StatusForbidden, "AWS.SimpleQueueService.PurgeQueueInProgress", "Only one PurgeQueue operation is allowed every 60 seconds.")
 	case errors.Is(err, ErrInvalidParameterValue):
 		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", sanitizeErrorMessage(err))
 	default:
@@ -1080,6 +1088,49 @@ func (h *Handler) deleteMessageBatchXML(w http.ResponseWriter, params query.Para
 			Successful: successful,
 			Failed:     failed,
 		},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- PurgeQueue handlers ---
+
+func (h *Handler) purgeQueueJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
+	queueName := pathQueueName
+	if queueName == "" {
+		queueName = queueNameFromURL(jsonString(raw, "QueueUrl"))
+	}
+	if queueName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	if err := h.engine.PurgeQueue(queueName); err != nil {
+		writeJSONQueueError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+type purgeQueueXMLResponse struct {
+	XMLName  xml.Name `xml:"PurgeQueueResponse"`
+	Metadata query.ResponseMetadata
+}
+
+func (h *Handler) purgeQueueXML(w http.ResponseWriter, params query.Params, queueName string) {
+	if queueName == "" {
+		queueName = queueNameFromURL(params.Get("QueueUrl"))
+	}
+	if queueName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	if err := h.engine.PurgeQueue(queueName); err != nil {
+		writeQueueErrorXML(w, err)
+		return
+	}
+
+	query.WriteXML(w, http.StatusOK, purgeQueueXMLResponse{
 		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
 	})
 }

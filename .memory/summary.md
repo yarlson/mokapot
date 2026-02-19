@@ -62,10 +62,11 @@ SQS core message lifecycle is operational. SNS is not yet implemented.
 - Get/SetQueueAttributes with validation (mutable attribute whitelist, numeric range checks)
 - Dead-letter queue: RedrivePolicy (deadLetterTargetArn + maxReceiveCount); messages exceeding maxReceiveCount are moved to DLQ during ReceiveMessage; DLQ existence validated on SetQueueAttributes
 - Batch operations: SendMessageBatch and DeleteMessageBatch with per-entry error handling, partial failure support, duplicate ID detection, batch size validation (max 10), per-entry DelaySeconds override
+- PurgeQueue: clears all messages (available, inflight, delayed) from a queue; 60-second cooldown enforced (PurgeQueueInProgress); queue remains usable after purge
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 
-**Not yet implemented:** ListQueues response, PurgeQueue, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS, persistence
+**Not yet implemented:** ListQueues response, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS, persistence
 
 ## Tech Stack
 

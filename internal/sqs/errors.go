@@ -13,6 +13,7 @@ var (
 	ErrEmptyBatchRequest            = errors.New("AWS.SimpleQueueService.EmptyBatchRequest")
 	ErrTooManyEntriesInBatchRequest = errors.New("AWS.SimpleQueueService.TooManyEntriesInBatchRequest")
 	ErrBatchEntryIdsNotDistinct     = errors.New("AWS.SimpleQueueService.BatchEntryIdsNotDistinct")
+	ErrPurgeQueueInProgress         = errors.New("AWS.SimpleQueueService.PurgeQueueInProgress")
 )
 
 func md5Hash(s string) string {

@@ -67,11 +67,12 @@ type Queue struct {
 	ARN        string
 	Attributes map[string]string
 
-	mu        sync.Mutex
-	available []*Message
-	inflight  map[string]*Message // receiptHandle -> message
-	waiters   []*waiter
-	createdAt time.Time
+	mu           sync.Mutex
+	available    []*Message
+	inflight     map[string]*Message // receiptHandle -> message
+	waiters      []*waiter
+	createdAt    time.Time
+	lastPurgedAt time.Time
 }
 
 // SetAttribute updates a single queue attribute under the queue lock.
@@ -584,6 +585,35 @@ func (e *Engine) moveToDLQ(dlqARN string, messages []*Message, now time.Time) {
 	}
 	dlq.notifyWaiters()
 	dlq.mu.Unlock()
+}
+
+// PurgeQueue removes all messages (available and inflight) from the named queue.
+// Like real SQS, it enforces a 60-second cooldown between purges on the same queue.
+func (e *Engine) PurgeQueue(queueName string) error {
+	e.mu.RLock()
+	q, exists := e.queues[queueName]
+	nowFn := e.now
+	e.mu.RUnlock()
+
+	if !exists {
+		return ErrQueueDoesNotExist
+	}
+
+	now := nowFn()
+
+	q.mu.Lock()
+	if !q.lastPurgedAt.IsZero() && now.Sub(q.lastPurgedAt) < 60*time.Second {
+		q.mu.Unlock()
+		return ErrPurgeQueueInProgress
+	}
+	q.available = nil
+	q.inflight = make(map[string]*Message)
+	q.lastPurgedAt = now
+	q.notifyWaiters()
+	q.mu.Unlock()
+
+	slog.Info("queue purged", "queue", queueName)
+	return nil
 }
 
 // DeleteMessage removes an inflight message by receipt handle.

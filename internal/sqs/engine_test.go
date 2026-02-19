@@ -1131,3 +1131,161 @@ func TestDeleteMessageBatch_DuplicateIDs(t *testing.T) {
 	_, err = e.DeleteMessageBatch("q", entries)
 	assert.ErrorIs(t, err, sqs.ErrBatchEntryIdsNotDistinct)
 }
+
+// --- PurgeQueue tests ---
+
+func TestPurgeQueue(t *testing.T) {
+	e := newEngine()
+	ctx := context.Background()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Send several messages
+	for i := range 5 {
+		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1)
+		require.NoError(t, err)
+	}
+
+	// Purge
+	err = e.PurgeQueue("q")
+	require.NoError(t, err)
+
+	// Queue should be empty
+	received, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+}
+
+func TestPurgeQueue_ClearsInflight(t *testing.T) {
+	e := newEngine()
+	ctx := context.Background()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "inflight-msg", -1)
+	require.NoError(t, err)
+
+	// Receive (makes it inflight)
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+
+	// Purge
+	err = e.PurgeQueue("q")
+	require.NoError(t, err)
+
+	// Advance past visibility timeout
+	now = now.Add(60 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Inflight message should not reappear
+	received, err = e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+}
+
+func TestPurgeQueue_NonExistentQueue(t *testing.T) {
+	e := newEngine()
+
+	err := e.PurgeQueue("nonexistent")
+	assert.ErrorIs(t, err, sqs.ErrQueueDoesNotExist)
+}
+
+func TestPurgeQueue_EmptyQueue(t *testing.T) {
+	e := newEngine()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Purging an empty queue should succeed without error
+	err = e.PurgeQueue("q")
+	require.NoError(t, err)
+}
+
+func TestPurgeQueue_QueueStillUsable(t *testing.T) {
+	e := newEngine()
+	ctx := context.Background()
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "before-purge", -1)
+	require.NoError(t, err)
+
+	err = e.PurgeQueue("q")
+	require.NoError(t, err)
+
+	// Queue should still be usable after purge
+	_, err = e.SendMessage("q", "after-purge", -1)
+	require.NoError(t, err)
+
+	received, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "after-purge", received[0].Body)
+}
+
+func TestPurgeQueue_CooldownEnforced(t *testing.T) {
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// First purge succeeds
+	err = e.PurgeQueue("q")
+	require.NoError(t, err)
+
+	// Immediate second purge fails with PurgeQueueInProgress
+	err = e.PurgeQueue("q")
+	assert.ErrorIs(t, err, sqs.ErrPurgeQueueInProgress)
+
+	// Advance clock to 59 seconds — still too early
+	now = now.Add(59 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	err = e.PurgeQueue("q")
+	assert.ErrorIs(t, err, sqs.ErrPurgeQueueInProgress)
+
+	// Advance to 60 seconds — should succeed
+	now = now.Add(1 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	err = e.PurgeQueue("q")
+	require.NoError(t, err)
+}
+
+func TestPurgeQueue_ClearsDelayedMessages(t *testing.T) {
+	e := newEngine()
+	ctx := context.Background()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	// Send a delayed message (10-second delay)
+	_, err = e.SendMessage("q", "delayed-msg", 10)
+	require.NoError(t, err)
+
+	// Purge
+	err = e.PurgeQueue("q")
+	require.NoError(t, err)
+
+	// Advance clock past the delay
+	now = now.Add(15 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Delayed message should not appear
+	received, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+}

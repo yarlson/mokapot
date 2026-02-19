@@ -41,6 +41,7 @@ Query Parser (internal/query/query.go)
   │     │ — delayed messages: per-message or queue-level DelaySeconds; filtered in receiveFromQueue
   │     │ — dead-letter queue: RedrivePolicy on source queue; messages exceeding maxReceiveCount moved to DLQ during receive
   │     │ — batch operations: SendMessageBatch/DeleteMessageBatch with partial failure, per-entry error isolation
+  │     │ — PurgeQueue: clears all available and inflight messages; 60-second cooldown (PurgeQueueInProgress)
   │     │ — Get/SetQueueAttributes: mutable attribute whitelist, numeric range validation, RedrivePolicy DLQ existence check
   │     │ — receipt handle regeneration + ReceiveCount tracking
   │     │ — injectable clock (now func() time.Time)
@@ -72,7 +73,7 @@ Query Parser (internal/query/query.go)
 │   └── 12 Change visibility
 ├── 5  Delayed messages ✓
 ├── 7  Batch operations ✓ (SendMessageBatch, DeleteMessageBatch)
-├── 8  Purge queue
+├── 8  Purge queue ✓
 ├── 9  SNS fanout (envelope)
 │   ├── 10 Raw delivery
 │   └── 11 Filter policies

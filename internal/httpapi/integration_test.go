@@ -919,3 +919,135 @@ func TestIntegration_SendMessageBatch_10Messages(t *testing.T) {
 	allReceived = append(allReceived, recvOut.Messages...)
 	assert.Len(t, allReceived, 10)
 }
+
+func TestIntegration_PurgeQueue(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("purge-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send several messages
+	for i := range 5 {
+		_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+			QueueUrl:    queueURL,
+			MessageBody: aws.String(fmt.Sprintf("msg-%d", i)),
+		})
+		require.NoError(t, err)
+	}
+
+	// Purge the queue
+	_, err = client.PurgeQueue(ctx, &awssqs.PurgeQueueInput{
+		QueueUrl: queueURL,
+	})
+	require.NoError(t, err)
+
+	// Queue should be empty
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvOut.Messages)
+}
+
+func TestIntegration_PurgeQueue_ClearsInflight(t *testing.T) {
+	client, ts, engine := newIntegrationSetup(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	now := time.Now()
+	engine.SetClock(func() time.Time { return now })
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("purge-inflight-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// Send a message
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    queueURL,
+		MessageBody: aws.String("inflight-msg"),
+	})
+	require.NoError(t, err)
+
+	// Receive it (now inflight)
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+
+	// Purge the queue — should clear inflight too
+	_, err = client.PurgeQueue(ctx, &awssqs.PurgeQueueInput{
+		QueueUrl: queueURL,
+	})
+	require.NoError(t, err)
+
+	// Advance past visibility timeout so inflight would reappear if not purged
+	now = now.Add(60 * time.Second)
+	engine.SetClock(func() time.Time { return now })
+
+	recvOut, err = client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            queueURL,
+		MaxNumberOfMessages: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, recvOut.Messages)
+}
+
+func TestIntegration_PurgeQueue_NonExistentQueue(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	_, err := client.PurgeQueue(ctx, &awssqs.PurgeQueueInput{
+		QueueUrl: aws.String("http://localhost/000000000000/no-such-queue"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "NonExistentQueue")
+}
+
+func TestIntegration_PurgeQueue_CooldownEnforced(t *testing.T) {
+	client, ts, engine := newIntegrationSetup(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	now := time.Now()
+	engine.SetClock(func() time.Time { return now })
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("purge-cooldown-queue"),
+	})
+	require.NoError(t, err)
+	queueURL := createOut.QueueUrl
+
+	// First purge succeeds
+	_, err = client.PurgeQueue(ctx, &awssqs.PurgeQueueInput{
+		QueueUrl: queueURL,
+	})
+	require.NoError(t, err)
+
+	// Immediate second purge should fail
+	_, err = client.PurgeQueue(ctx, &awssqs.PurgeQueueInput{
+		QueueUrl: queueURL,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PurgeQueueInProgress")
+
+	// Advance past the 60-second cooldown
+	now = now.Add(61 * time.Second)
+	engine.SetClock(func() time.Time { return now })
+
+	// Should succeed again
+	_, err = client.PurgeQueue(ctx, &awssqs.PurgeQueueInput{
+		QueueUrl: queueURL,
+	})
+	require.NoError(t, err)
+}
