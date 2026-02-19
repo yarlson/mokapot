@@ -22,6 +22,7 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 ## Capabilities
 
 ### SQS
+
 - Queue CRUD (CreateQueue, DeleteQueue, ListQueues, GetQueueUrl)
 - Queue attributes (Get/SetQueueAttributes)
 - Message lifecycle: SendMessage, ReceiveMessage, DeleteMessage
@@ -34,6 +35,7 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 - ChangeMessageVisibility
 
 ### SNS
+
 - Topic CRUD (CreateTopic, DeleteTopic, ListTopics, Get/SetTopicAttributes)
 - Subscriptions (Subscribe, Unsubscribe, ListSubscriptionsByTopic, Get/SetSubscriptionAttributes)
 - Publish with fanout to SQS queues
@@ -45,6 +47,7 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 SQS core message lifecycle is operational. SNS is not yet implemented.
 
 **Operational:**
+
 - `messagingd` binary boots, listens on configurable PORT (default 4566)
 - `GET /_health` returns `{"status":"ok"}`
 - Graceful shutdown on SIGINT/SIGTERM

@@ -45,6 +45,7 @@ internal/types/    — shared structs, canonical encodings (planned)
 ## Configuration
 
 All via environment variables (optional, with defaults):
+
 - `PORT` (4566), `REGION` (eu-central-1), `ACCOUNT_ID` (000000000000), `SQS_HOST` (localhost)
 - `LOG_LEVEL` (info), `DATA_DIR` (empty = in-memory), `PERSISTENCE` (memory)
 

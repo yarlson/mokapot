@@ -168,9 +168,9 @@ Each slice is a small, end-to-end, user-visible outcome that can ship independen
 
 ## Blocking ambiguities
 
-| # | Ambiguity | Which slices are blocked |
-|---|-----------|--------------------------|
-| 1 | **FIFO queues** — PRD says "optional, default off" but never defines the trigger or required semantics. Omit entirely, or define scope? | None blocked (omit until clarified) |
-| 2 | **`MessageStructure=json`** — "store/ignore or partial support" is not a decidable spec. | Slice 9 |
-| 3 | **DLQ MessageId** — preserve original or generate new? Affects consumer correlation. | Slice 6 |
-| 4 | **Unresolvable subscription endpoint at publish time** — silent drop or error? | Slices 9–11 |
+| #   | Ambiguity                                                                                                                               | Which slices are blocked            |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| 1   | **FIFO queues** — PRD says "optional, default off" but never defines the trigger or required semantics. Omit entirely, or define scope? | None blocked (omit until clarified) |
+| 2   | **`MessageStructure=json`** — "store/ignore or partial support" is not a decidable spec.                                                | Slice 9                             |
+| 3   | **DLQ MessageId** — preserve original or generate new? Affects consumer correlation.                                                    | Slice 6                             |
+| 4   | **Unresolvable subscription endpoint at publish time** — silent drop or error?                                                          | Slices 9–11                         |
