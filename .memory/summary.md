@@ -39,18 +39,19 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 - CreateTopic (idempotent — returns existing topic if name matches)
 - Subscribe (sqs protocol only — endpoint is an SQS queue ARN)
 - Publish with fanout to all SQS subscriptions; messages wrapped in standard SNS JSON envelope (Type, MessageId, TopicArn, Message, Subject, Timestamp, Signature stubs)
+- Get/SetSubscriptionAttributes: per-subscription attribute store with RawMessageDelivery validation (must be "true"/"false")
+- RawMessageDelivery: when enabled on a subscription, Publish delivers the plain message body instead of the SNS JSON envelope; per-subscription toggle, mixed raw/envelope fanout supported
 - Dual protocol: AWS Query/XML and AWS JSON 1.0 (same as SQS)
 
 ### SNS (not yet implemented)
 
 - DeleteTopic, ListTopics, Get/SetTopicAttributes
-- Unsubscribe, ListSubscriptionsByTopic, Get/SetSubscriptionAttributes
-- RawMessageDelivery toggle
+- Unsubscribe, ListSubscriptionsByTopic
 - FilterPolicy evaluation (exact match, allowlist, exists, anything-but, numeric comparisons)
 
 ## System State
 
-SQS core message lifecycle is operational. SNS basic fanout (CreateTopic, Subscribe, Publish) is operational.
+SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, Publish, Get/SetSubscriptionAttributes, RawMessageDelivery) is operational.
 
 **Operational:**
 
@@ -72,7 +73,7 @@ SQS core message lifecycle is operational. SNS basic fanout (CreateTopic, Subscr
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 
-**Not yet implemented:** DeleteQueue, ListQueues, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish, RawMessageDelivery, FilterPolicy, persistence
+**Not yet implemented:** DeleteQueue, ListQueues, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish+Get/SetSubscriptionAttributes, FilterPolicy, persistence
 
 ## Tech Stack
 

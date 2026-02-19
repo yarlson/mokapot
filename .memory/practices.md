@@ -57,6 +57,7 @@ All via environment variables (optional, with defaults):
 - No per-message goroutine timers (avoid goroutine explosion)
 - No global scheduler goroutine for long polling — each long-polling `ReceiveMessage` manages its own timer and waiter lifecycle
 - **Lock ordering**: when touching two queues (e.g., source → DLQ), unlock the source queue before acquiring the DLQ lock to prevent deadlock
+- **SNS subscription attributes**: per-subscription `sync.RWMutex` protects the `Attributes` map; Publish reads with `RLock`, Set/GetSubscriptionAttributes write/read with `Lock`/`RLock`; `subscriptionsByARN` global index is protected by the engine-level `sync.RWMutex`
 - **DLQ move is lazy**: happens inside `receiveFromQueue`, not via background goroutine
 - `ReceiveMessage` accepts `context.Context` — context cancellation terminates long polls gracefully
 
