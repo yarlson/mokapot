@@ -9,10 +9,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/yarlson/devstack/internal/httpapi"
+	"github.com/yarlson/devstack/internal/sqs"
 )
 
+func newTestServer() http.Handler {
+	engine := sqs.NewEngine("us-east-1", "000000000000", "localhost:4566")
+	return httpapi.NewServer(sqs.NewHandler(engine))
+}
+
 func TestHealthEndpoint(t *testing.T) {
-	srv := httpapi.NewServer()
+	srv := newTestServer()
 
 	req := httptest.NewRequest(http.MethodGet, "/_health", nil)
 	rec := httptest.NewRecorder()
@@ -27,12 +33,12 @@ func TestHealthEndpoint(t *testing.T) {
 	assert.Equal(t, "ok", body["status"])
 }
 
-func TestUnknownRouteReturns404(t *testing.T) {
-	srv := httpapi.NewServer()
+func TestGetOnPostRouteReturns405(t *testing.T) {
+	srv := newTestServer()
 
-	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 }
