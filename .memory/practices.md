@@ -26,6 +26,7 @@
 - Primary test client: **AWS SDK for Go v2** (`github.com/aws/aws-sdk-go-v2`) for integration tests — same protocol real apps use, catches SigV4/XML compatibility issues
 - Unit tests use `testify` (assert + require)
 - Golden response shape tests for each action (verify XML structure, required fields, error shapes)
+- **Handler-level JSON protocol tests**: `httptest` + direct `handler.HandleRequest` calls with `Content-Type: application/x-amz-json-1.0` and `X-Amz-Target` headers; tests JSON request/response shapes without going through a real HTTP server or AWS SDK; covers all SQS actions (CRUD, batch, visibility, attributes, errors)
 - Node.js and PHP SDK tests for final validation, not primary feedback loop
 - **Deterministic time in tests**: use `Engine.SetClock` to inject a controllable clock; advance time by mutating the closure — never use `time.Sleep` in tests
 
