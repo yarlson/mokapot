@@ -82,6 +82,10 @@ func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request, pathQueueNa
 		h.changeMessageVisibilityJSON(w, raw, pathQueueName)
 	case "ChangeMessageVisibilityBatch":
 		h.changeMessageVisibilityBatchJSON(w, raw, pathQueueName)
+	case "ListQueues":
+		h.listQueuesJSON(w, raw)
+	case "DeleteQueue":
+		h.deleteQueueJSON(w, raw, pathQueueName)
 	default:
 		writeJSONError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not valid for this endpoint.")
 	}
@@ -273,10 +277,7 @@ func (h *Handler) setQueueAttributesJSON(w http.ResponseWriter, raw map[string]j
 func queueNameFromURL(queueURL string) string {
 	// Extract queue name from URL like http://host:port/accountId/queueName
 	parts := strings.Split(strings.TrimRight(queueURL, "/"), "/")
-	if len(parts) >= 1 {
-		return parts[len(parts)-1]
-	}
-	return ""
+	return parts[len(parts)-1]
 }
 
 func (h *Handler) sendMessageJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
@@ -464,6 +465,10 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request, pathQueueN
 		h.changeMessageVisibilityXML(w, params, pathQueueName)
 	case "ChangeMessageVisibilityBatch":
 		h.changeMessageVisibilityBatchXML(w, params, pathQueueName)
+	case "ListQueues":
+		h.listQueuesXML(w, params)
+	case "DeleteQueue":
+		h.deleteQueueXML(w, params, pathQueueName)
 	default:
 		query.WriteError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not valid for this endpoint.")
 	}
@@ -1236,7 +1241,7 @@ func (h *Handler) changeMessageVisibilityBatchJSON(w http.ResponseWriter, raw ma
 	type jsonBatchEntry struct {
 		Id                string `json:"Id"`
 		ReceiptHandle     string `json:"ReceiptHandle"`
-		VisibilityTimeout int    `json:"VisibilityTimeout"`
+		VisibilityTimeout *int   `json:"VisibilityTimeout"`
 	}
 
 	var entries []jsonBatchEntry
@@ -1249,10 +1254,14 @@ func (h *Handler) changeMessageVisibilityBatchJSON(w http.ResponseWriter, raw ma
 
 	batchEntries := make([]ChangeMessageVisibilityBatchEntry, len(entries))
 	for i, e := range entries {
+		if e.VisibilityTimeout == nil {
+			writeJSONError(w, http.StatusBadRequest, "MissingParameter", "The request must contain the parameter VisibilityTimeout for entry "+e.Id+".")
+			return
+		}
 		batchEntries[i] = ChangeMessageVisibilityBatchEntry{
 			ID:                e.Id,
 			ReceiptHandle:     e.ReceiptHandle,
-			VisibilityTimeout: e.VisibilityTimeout,
+			VisibilityTimeout: *e.VisibilityTimeout,
 		}
 	}
 
@@ -1321,14 +1330,14 @@ func (h *Handler) changeMessageVisibilityBatchXML(w http.ResponseWriter, params 
 		}
 		handle := params.Get(fmt.Sprintf("ChangeMessageVisibilityBatchRequestEntry.%d.ReceiptHandle", i))
 		vtStr := params.Get(fmt.Sprintf("ChangeMessageVisibilityBatchRequestEntry.%d.VisibilityTimeout", i))
-		vt := 0
-		if vtStr != "" {
-			v, err := strconv.Atoi(vtStr)
-			if err != nil {
-				query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Value for parameter VisibilityTimeout is invalid.")
-				return
-			}
-			vt = v
+		if vtStr == "" {
+			query.WriteError(w, http.StatusBadRequest, "MissingParameter", "The request must contain the parameter VisibilityTimeout for entry "+id+".")
+			return
+		}
+		vt, err := strconv.Atoi(vtStr)
+		if err != nil {
+			query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Value for parameter VisibilityTimeout is invalid.")
+			return
 		}
 		entries = append(entries, ChangeMessageVisibilityBatchEntry{
 			ID:                id,
@@ -1357,6 +1366,77 @@ func (h *Handler) changeMessageVisibilityBatchXML(w http.ResponseWriter, params 
 			Successful: successful,
 			Failed:     failed,
 		},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- ListQueues handlers ---
+
+func (h *Handler) listQueuesJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
+	prefix := jsonString(raw, "QueueNamePrefix")
+	urls := h.engine.ListQueues(prefix)
+	writeJSON(w, map[string]any{"QueueUrls": urls})
+}
+
+type listQueuesXMLResponse struct {
+	XMLName  xml.Name            `xml:"ListQueuesResponse"`
+	Result   listQueuesXMLResult `xml:"ListQueuesResult"`
+	Metadata query.ResponseMetadata
+}
+
+type listQueuesXMLResult struct {
+	QueueURLs []string `xml:"QueueUrl,omitempty"`
+}
+
+func (h *Handler) listQueuesXML(w http.ResponseWriter, params query.Params) {
+	prefix := params.Get("QueueNamePrefix")
+	urls := h.engine.ListQueues(prefix)
+
+	query.WriteXML(w, http.StatusOK, listQueuesXMLResponse{
+		Result:   listQueuesXMLResult{QueueURLs: urls},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- DeleteQueue handlers ---
+
+func (h *Handler) deleteQueueJSON(w http.ResponseWriter, raw map[string]json.RawMessage, pathQueueName string) {
+	queueName := pathQueueName
+	if queueName == "" {
+		queueName = queueNameFromURL(jsonString(raw, "QueueUrl"))
+	}
+	if queueName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	if err := h.engine.DeleteQueue(queueName); err != nil {
+		writeJSONQueueError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{})
+}
+
+type deleteQueueXMLResponse struct {
+	XMLName  xml.Name `xml:"DeleteQueueResponse"`
+	Metadata query.ResponseMetadata
+}
+
+func (h *Handler) deleteQueueXML(w http.ResponseWriter, params query.Params, queueName string) {
+	if queueName == "" {
+		queueName = queueNameFromURL(params.Get("QueueUrl"))
+	}
+	if queueName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", "Queue name is required.")
+		return
+	}
+
+	if err := h.engine.DeleteQueue(queueName); err != nil {
+		writeQueueErrorXML(w, err)
+		return
+	}
+
+	query.WriteXML(w, http.StatusOK, deleteQueueXMLResponse{
 		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
 	})
 }

@@ -65,6 +65,18 @@ func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		h.setSubscriptionAttributesJSON(w, raw)
 	case "GetSubscriptionAttributes":
 		h.getSubscriptionAttributesJSON(w, raw)
+	case "ListTopics":
+		h.listTopicsJSON(w)
+	case "DeleteTopic":
+		h.deleteTopicJSON(w, raw)
+	case "ListSubscriptionsByTopic":
+		h.listSubscriptionsByTopicJSON(w, raw)
+	case "Unsubscribe":
+		h.unsubscribeJSON(w, raw)
+	case "GetTopicAttributes":
+		h.getTopicAttributesJSON(w, raw)
+	case "SetTopicAttributes":
+		h.setTopicAttributesJSON(w, raw)
 	default:
 		if IsSNSAction(action) {
 			writeJSONError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not yet implemented.")
@@ -273,6 +285,18 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		h.setSubscriptionAttributesXML(w, params)
 	case "GetSubscriptionAttributes":
 		h.getSubscriptionAttributesXML(w, params)
+	case "ListTopics":
+		h.listTopicsXML(w)
+	case "DeleteTopic":
+		h.deleteTopicXML(w, params)
+	case "ListSubscriptionsByTopic":
+		h.listSubscriptionsByTopicXML(w, params)
+	case "Unsubscribe":
+		h.unsubscribeXML(w, params)
+	case "GetTopicAttributes":
+		h.getTopicAttributesXML(w, params)
+	case "SetTopicAttributes":
+		h.setTopicAttributesXML(w, params)
 	default:
 		if IsSNSAction(action) {
 			query.WriteError(w, http.StatusBadRequest, "InvalidAction", "The action "+action+" is not yet implemented.")
@@ -502,4 +526,301 @@ func IsSNSAction(action string) bool {
 		return true
 	}
 	return false
+}
+
+// --- ListTopics handlers ---
+
+func (h *Handler) listTopicsJSON(w http.ResponseWriter) {
+	arns := h.engine.ListTopics()
+
+	type topicEntry struct {
+		TopicArn string `json:"TopicArn"`
+	}
+	topics := make([]topicEntry, len(arns))
+	for i, arn := range arns {
+		topics[i] = topicEntry{TopicArn: arn}
+	}
+	writeJSON(w, map[string]any{"Topics": topics})
+}
+
+type listTopicsXMLResponse struct {
+	XMLName  xml.Name            `xml:"ListTopicsResponse"`
+	Result   listTopicsXMLResult `xml:"ListTopicsResult"`
+	Metadata query.ResponseMetadata
+}
+
+type listTopicsXMLResult struct {
+	Topics []listTopicsXMLMember `xml:"Topics>member,omitempty"`
+}
+
+type listTopicsXMLMember struct {
+	TopicARN string `xml:"TopicArn"`
+}
+
+func (h *Handler) listTopicsXML(w http.ResponseWriter) {
+	arns := h.engine.ListTopics()
+
+	members := make([]listTopicsXMLMember, len(arns))
+	for i, arn := range arns {
+		members[i] = listTopicsXMLMember{TopicARN: arn}
+	}
+
+	query.WriteXML(w, http.StatusOK, listTopicsXMLResponse{
+		Result:   listTopicsXMLResult{Topics: members},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- DeleteTopic handlers ---
+
+func (h *Handler) deleteTopicJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
+	topicARN := jsonString(raw, "TopicArn")
+	if topicARN == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameter", "TopicArn is required.")
+		return
+	}
+
+	if err := h.engine.DeleteTopic(topicARN); err != nil {
+		writeSNSJSONError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{})
+}
+
+type deleteTopicXMLResponse struct {
+	XMLName  xml.Name `xml:"DeleteTopicResponse"`
+	Metadata query.ResponseMetadata
+}
+
+func (h *Handler) deleteTopicXML(w http.ResponseWriter, params query.Params) {
+	topicARN := params.Get("TopicArn")
+	if topicARN == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameter", "TopicArn is required.")
+		return
+	}
+
+	if err := h.engine.DeleteTopic(topicARN); err != nil {
+		writeSNSErrorXML(w, err)
+		return
+	}
+
+	query.WriteXML(w, http.StatusOK, deleteTopicXMLResponse{
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- ListSubscriptionsByTopic handlers ---
+
+func (h *Handler) listSubscriptionsByTopicJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
+	topicARN := jsonString(raw, "TopicArn")
+	if topicARN == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameter", "TopicArn is required.")
+		return
+	}
+
+	subs, err := h.engine.ListSubscriptionsByTopic(topicARN)
+	if err != nil {
+		writeSNSJSONError(w, err)
+		return
+	}
+
+	writeJSON(w, map[string]any{"Subscriptions": subs})
+}
+
+type listSubscriptionsByTopicXMLResponse struct {
+	XMLName  xml.Name                          `xml:"ListSubscriptionsByTopicResponse"`
+	Result   listSubscriptionsByTopicXMLResult `xml:"ListSubscriptionsByTopicResult"`
+	Metadata query.ResponseMetadata
+}
+
+type listSubscriptionsByTopicXMLResult struct {
+	Subscriptions []listSubscriptionsXMLMember `xml:"Subscriptions>member,omitempty"`
+}
+
+type listSubscriptionsXMLMember struct {
+	SubscriptionARN string `xml:"SubscriptionArn"`
+	TopicARN        string `xml:"TopicArn"`
+	Protocol        string `xml:"Protocol"`
+	Endpoint        string `xml:"Endpoint"`
+	Owner           string `xml:"Owner"`
+}
+
+func (h *Handler) listSubscriptionsByTopicXML(w http.ResponseWriter, params query.Params) {
+	topicARN := params.Get("TopicArn")
+	if topicARN == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameter", "TopicArn is required.")
+		return
+	}
+
+	subs, err := h.engine.ListSubscriptionsByTopic(topicARN)
+	if err != nil {
+		writeSNSErrorXML(w, err)
+		return
+	}
+
+	members := make([]listSubscriptionsXMLMember, len(subs))
+	for i, sub := range subs {
+		members[i] = listSubscriptionsXMLMember{
+			SubscriptionARN: sub["SubscriptionArn"],
+			TopicARN:        sub["TopicArn"],
+			Protocol:        sub["Protocol"],
+			Endpoint:        sub["Endpoint"],
+			Owner:           sub["Owner"],
+		}
+	}
+
+	query.WriteXML(w, http.StatusOK, listSubscriptionsByTopicXMLResponse{
+		Result:   listSubscriptionsByTopicXMLResult{Subscriptions: members},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- Unsubscribe handlers ---
+
+func (h *Handler) unsubscribeJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
+	subARN := jsonString(raw, "SubscriptionArn")
+	if subARN == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameter", "SubscriptionArn is required.")
+		return
+	}
+
+	if err := h.engine.Unsubscribe(subARN); err != nil {
+		writeSNSJSONError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{})
+}
+
+type unsubscribeXMLResponse struct {
+	XMLName  xml.Name `xml:"UnsubscribeResponse"`
+	Metadata query.ResponseMetadata
+}
+
+func (h *Handler) unsubscribeXML(w http.ResponseWriter, params query.Params) {
+	subARN := params.Get("SubscriptionArn")
+	if subARN == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameter", "SubscriptionArn is required.")
+		return
+	}
+
+	if err := h.engine.Unsubscribe(subARN); err != nil {
+		writeSNSErrorXML(w, err)
+		return
+	}
+
+	query.WriteXML(w, http.StatusOK, unsubscribeXMLResponse{
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- GetTopicAttributes handlers ---
+
+func (h *Handler) getTopicAttributesJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
+	topicARN := jsonString(raw, "TopicArn")
+	if topicARN == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameter", "TopicArn is required.")
+		return
+	}
+
+	attrs, err := h.engine.GetTopicAttributes(topicARN)
+	if err != nil {
+		writeSNSJSONError(w, err)
+		return
+	}
+
+	writeJSON(w, map[string]any{"Attributes": attrs})
+}
+
+type getTopicAttributesXMLResponse struct {
+	XMLName  xml.Name                    `xml:"GetTopicAttributesResponse"`
+	Result   getTopicAttributesXMLResult `xml:"GetTopicAttributesResult"`
+	Metadata query.ResponseMetadata
+}
+
+type getTopicAttributesXMLResult struct {
+	Attributes []xmlTopicAttribute `xml:"Attributes>entry,omitempty"`
+}
+
+type xmlTopicAttribute struct {
+	Key   string `xml:"key"`
+	Value string `xml:"value"`
+}
+
+func (h *Handler) getTopicAttributesXML(w http.ResponseWriter, params query.Params) {
+	topicARN := params.Get("TopicArn")
+	if topicARN == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameter", "TopicArn is required.")
+		return
+	}
+
+	attrs, err := h.engine.GetTopicAttributes(topicARN)
+	if err != nil {
+		writeSNSErrorXML(w, err)
+		return
+	}
+
+	var xmlAttrs []xmlTopicAttribute
+	for k, v := range attrs {
+		xmlAttrs = append(xmlAttrs, xmlTopicAttribute{Key: k, Value: v})
+	}
+
+	query.WriteXML(w, http.StatusOK, getTopicAttributesXMLResponse{
+		Result:   getTopicAttributesXMLResult{Attributes: xmlAttrs},
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
+}
+
+// --- SetTopicAttributes handlers ---
+
+func (h *Handler) setTopicAttributesJSON(w http.ResponseWriter, raw map[string]json.RawMessage) {
+	topicARN := jsonString(raw, "TopicArn")
+	attrName := jsonString(raw, "AttributeName")
+	attrValue := jsonString(raw, "AttributeValue")
+
+	if topicARN == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameter", "TopicArn is required.")
+		return
+	}
+	if attrName == "" {
+		writeJSONError(w, http.StatusBadRequest, "InvalidParameter", "AttributeName is required.")
+		return
+	}
+
+	err := h.engine.SetTopicAttributes(topicARN, attrName, attrValue)
+	if err != nil {
+		writeSNSJSONError(w, err)
+		return
+	}
+
+	writeJSON(w, map[string]any{})
+}
+
+type setTopicAttributesXMLResponse struct {
+	XMLName  xml.Name `xml:"SetTopicAttributesResponse"`
+	Metadata query.ResponseMetadata
+}
+
+func (h *Handler) setTopicAttributesXML(w http.ResponseWriter, params query.Params) {
+	topicARN := params.Get("TopicArn")
+	attrName := params.Get("AttributeName")
+	attrValue := params.Get("AttributeValue")
+
+	if topicARN == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameter", "TopicArn is required.")
+		return
+	}
+	if attrName == "" {
+		query.WriteError(w, http.StatusBadRequest, "InvalidParameter", "AttributeName is required.")
+		return
+	}
+
+	err := h.engine.SetTopicAttributes(topicARN, attrName, attrValue)
+	if err != nil {
+		writeSNSErrorXML(w, err)
+		return
+	}
+
+	query.WriteXML(w, http.StatusOK, setTopicAttributesXMLResponse{
+		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
+	})
 }

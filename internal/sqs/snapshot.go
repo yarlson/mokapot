@@ -97,13 +97,18 @@ func (e *Engine) Restore(data []byte) error {
 
 	now := e.now()
 	e.queues = make(map[string]*Queue, len(queues))
+	e.queuesByARN = make(map[string]*Queue, len(queues))
 
 	for _, qs := range queues {
+		attrs := qs.Attributes
+		if attrs == nil {
+			attrs = make(map[string]string)
+		}
 		q := &Queue{
 			Name:         qs.Name,
 			URL:          qs.URL,
 			ARN:          qs.ARN,
-			Attributes:   qs.Attributes,
+			Attributes:   attrs,
 			inflight:     make(map[string]*Message),
 			createdAt:    qs.CreatedAt,
 			lastPurgedAt: qs.LastPurgedAt,
@@ -136,6 +141,7 @@ func (e *Engine) Restore(data []byte) error {
 		}
 
 		e.queues[qs.Name] = q
+		e.queuesByARN[q.ARN] = q
 	}
 
 	return nil

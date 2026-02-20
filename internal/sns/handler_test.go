@@ -269,7 +269,7 @@ func TestXML_GetSubscriptionAttributes_SubscriptionNotFound(t *testing.T) {
 }
 
 // extractXMLValue extracts the text content between XML tags.
-func extractXMLValue(body, tag string) string {
+func extractXMLValue(body, tag string) string { //nolint:unparam // tag is kept as param for readability
 	start := strings.Index(body, "<"+tag+">")
 	if start < 0 {
 		return ""
@@ -384,4 +384,307 @@ func TestJSON_GetSubscriptionAttributes(t *testing.T) {
 	assert.Contains(t, body, "Attributes")
 	assert.Contains(t, body, "RawMessageDelivery")
 	assert.Contains(t, body, "Protocol")
+}
+
+// --- Golden response shape: ListTopics ---
+
+func TestXML_ListTopics_Shape(t *testing.T) {
+	h := newTestHandler()
+	postSNSQuery(h, "Action=CreateTopic&Name=list-topic-a")
+	postSNSQuery(h, "Action=CreateTopic&Name=list-topic-b")
+
+	rec := postSNSQuery(h, "Action=ListTopics")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ListTopicsResponse>")
+	assert.Contains(t, body, "<ListTopicsResult>")
+	assert.Contains(t, body, "<TopicArn>")
+	assert.Contains(t, body, "list-topic-a")
+	assert.Contains(t, body, "list-topic-b")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_ListTopics_Empty_Shape(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postSNSQuery(h, "Action=ListTopics")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ListTopicsResponse>")
+	assert.Contains(t, body, "<ListTopicsResult>")
+	assert.NotContains(t, body, "<TopicArn>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+}
+
+func TestJSON_ListTopics(t *testing.T) {
+	h := newTestHandler()
+	postSNSJSON(h, "SNS.CreateTopic", `{"Name":"json-list-topic"}`)
+
+	rec := postSNSJSON(h, "SNS.ListTopics", `{}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Topics")
+	assert.Contains(t, body, "json-list-topic")
+}
+
+// --- Golden response shape: DeleteTopic ---
+
+func TestXML_DeleteTopic_Shape(t *testing.T) {
+	h := newTestHandler()
+	postSNSQuery(h, "Action=CreateTopic&Name=del-topic")
+
+	rec := postSNSQuery(h, "Action=DeleteTopic&TopicArn=arn:aws:sns:eu-central-1:000000000000:del-topic")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<DeleteTopicResponse>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+
+	// Verify topic is gone.
+	listRec := postSNSQuery(h, "Action=ListTopics")
+	assert.NotContains(t, listRec.Body.String(), "del-topic")
+}
+
+func TestXML_DeleteTopic_NotFound(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postSNSQuery(h, "Action=DeleteTopic&TopicArn=arn:aws:sns:eu-central-1:000000000000:nonexistent")
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>NotFound</Code>")
+}
+
+func TestJSON_DeleteTopic(t *testing.T) {
+	h := newTestHandler()
+	postSNSJSON(h, "SNS.CreateTopic", `{"Name":"json-del-topic"}`)
+
+	rec := postSNSJSON(h, "SNS.DeleteTopic", `{"TopicArn":"arn:aws:sns:eu-central-1:000000000000:json-del-topic"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- Golden response shape: ListSubscriptionsByTopic ---
+
+func TestXML_ListSubscriptionsByTopic_Shape(t *testing.T) {
+	h := newTestHandler()
+	postSNSQuery(h, "Action=CreateTopic&Name=lsbt-topic")
+	postSNSQuery(h, "Action=Subscribe"+
+		"&TopicArn=arn:aws:sns:eu-central-1:000000000000:lsbt-topic"+
+		"&Protocol=sqs"+
+		"&Endpoint=arn:aws:sqs:eu-central-1:000000000000:q1")
+	postSNSQuery(h, "Action=Subscribe"+
+		"&TopicArn=arn:aws:sns:eu-central-1:000000000000:lsbt-topic"+
+		"&Protocol=sqs"+
+		"&Endpoint=arn:aws:sqs:eu-central-1:000000000000:q2")
+
+	rec := postSNSQuery(h, "Action=ListSubscriptionsByTopic&TopicArn=arn:aws:sns:eu-central-1:000000000000:lsbt-topic")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ListSubscriptionsByTopicResponse>")
+	assert.Contains(t, body, "<ListSubscriptionsByTopicResult>")
+	assert.Contains(t, body, "<SubscriptionArn>")
+	assert.Contains(t, body, "<Protocol>sqs</Protocol>")
+	assert.Contains(t, body, "q1")
+	assert.Contains(t, body, "q2")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_ListSubscriptionsByTopic_TopicNotFound(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postSNSQuery(h, "Action=ListSubscriptionsByTopic&TopicArn=arn:aws:sns:eu-central-1:000000000000:nonexistent")
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "<Code>NotFound</Code>")
+}
+
+func TestJSON_ListSubscriptionsByTopic(t *testing.T) {
+	h := newTestHandler()
+	postSNSJSON(h, "SNS.CreateTopic", `{"Name":"json-lsbt-topic"}`)
+	postSNSJSON(h, "SNS.Subscribe", `{
+		"TopicArn":"arn:aws:sns:eu-central-1:000000000000:json-lsbt-topic",
+		"Protocol":"sqs",
+		"Endpoint":"arn:aws:sqs:eu-central-1:000000000000:q"
+	}`)
+
+	rec := postSNSJSON(h, "SNS.ListSubscriptionsByTopic", `{"TopicArn":"arn:aws:sns:eu-central-1:000000000000:json-lsbt-topic"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Subscriptions")
+	assert.Contains(t, body, "SubscriptionArn")
+}
+
+// --- Golden response shape: Unsubscribe ---
+
+func TestXML_Unsubscribe_Shape(t *testing.T) {
+	h := newTestHandler()
+	postSNSQuery(h, "Action=CreateTopic&Name=unsub-topic")
+
+	subRec := postSNSQuery(h, "Action=Subscribe"+
+		"&TopicArn=arn:aws:sns:eu-central-1:000000000000:unsub-topic"+
+		"&Protocol=sqs"+
+		"&Endpoint=arn:aws:sqs:eu-central-1:000000000000:q")
+	require.Equal(t, http.StatusOK, subRec.Code)
+	subARN := extractXMLValue(subRec.Body.String(), "SubscriptionArn")
+	require.NotEmpty(t, subARN)
+
+	rec := postSNSQuery(h, "Action=Unsubscribe&SubscriptionArn="+subARN)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<UnsubscribeResponse>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+
+	// Verify subscription is removed.
+	listRec := postSNSQuery(h, "Action=ListSubscriptionsByTopic&TopicArn=arn:aws:sns:eu-central-1:000000000000:unsub-topic")
+	assert.NotContains(t, listRec.Body.String(), subARN)
+}
+
+func TestXML_Unsubscribe_NotFound(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postSNSQuery(h, "Action=Unsubscribe&SubscriptionArn=arn:aws:sns:eu-central-1:000000000000:topic:nonexistent")
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "<Code>NotFound</Code>")
+}
+
+func TestJSON_Unsubscribe(t *testing.T) {
+	h := newTestHandler()
+	postSNSJSON(h, "SNS.CreateTopic", `{"Name":"json-unsub-topic"}`)
+
+	subRec := postSNSJSON(h, "SNS.Subscribe", `{
+		"TopicArn":"arn:aws:sns:eu-central-1:000000000000:json-unsub-topic",
+		"Protocol":"sqs",
+		"Endpoint":"arn:aws:sqs:eu-central-1:000000000000:q"
+	}`)
+	require.Equal(t, http.StatusOK, subRec.Code)
+
+	var subResp map[string]string
+	err := json.Unmarshal(subRec.Body.Bytes(), &subResp)
+	require.NoError(t, err)
+	subARN := subResp["SubscriptionArn"]
+	require.NotEmpty(t, subARN)
+
+	rec := postSNSJSON(h, "SNS.Unsubscribe", `{"SubscriptionArn":"`+subARN+`"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- Golden response shape: GetTopicAttributes ---
+
+func TestXML_GetTopicAttributes_Shape(t *testing.T) {
+	h := newTestHandler()
+	postSNSQuery(h, "Action=CreateTopic&Name=gta-topic")
+
+	rec := postSNSQuery(h, "Action=GetTopicAttributes&TopicArn=arn:aws:sns:eu-central-1:000000000000:gta-topic")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<GetTopicAttributesResponse>")
+	assert.Contains(t, body, "<GetTopicAttributesResult>")
+	assert.Contains(t, body, "TopicArn")
+	assert.Contains(t, body, "gta-topic")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_GetTopicAttributes_NotFound(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postSNSQuery(h, "Action=GetTopicAttributes&TopicArn=arn:aws:sns:eu-central-1:000000000000:nonexistent")
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "<Code>NotFound</Code>")
+}
+
+func TestJSON_GetTopicAttributes(t *testing.T) {
+	h := newTestHandler()
+	postSNSJSON(h, "SNS.CreateTopic", `{"Name":"json-gta-topic"}`)
+
+	rec := postSNSJSON(h, "SNS.GetTopicAttributes", `{"TopicArn":"arn:aws:sns:eu-central-1:000000000000:json-gta-topic"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Attributes")
+	assert.Contains(t, body, "TopicArn")
+}
+
+// --- Golden response shape: SetTopicAttributes ---
+
+func TestXML_SetTopicAttributes_Shape(t *testing.T) {
+	h := newTestHandler()
+	postSNSQuery(h, "Action=CreateTopic&Name=sta-topic")
+
+	rec := postSNSQuery(h, "Action=SetTopicAttributes"+
+		"&TopicArn=arn:aws:sns:eu-central-1:000000000000:sta-topic"+
+		"&AttributeName=DisplayName"+
+		"&AttributeValue=My+Topic")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<SetTopicAttributesResponse>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+
+	// Verify the attribute was set.
+	getRec := postSNSQuery(h, "Action=GetTopicAttributes&TopicArn=arn:aws:sns:eu-central-1:000000000000:sta-topic")
+	assert.Contains(t, getRec.Body.String(), "My Topic")
+}
+
+func TestXML_SetTopicAttributes_NotFound(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postSNSQuery(h, "Action=SetTopicAttributes"+
+		"&TopicArn=arn:aws:sns:eu-central-1:000000000000:nonexistent"+
+		"&AttributeName=DisplayName"+
+		"&AttributeValue=test")
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "<Code>NotFound</Code>")
+}
+
+func TestJSON_SetTopicAttributes(t *testing.T) {
+	h := newTestHandler()
+	postSNSJSON(h, "SNS.CreateTopic", `{"Name":"json-sta-topic"}`)
+
+	rec := postSNSJSON(h, "SNS.SetTopicAttributes", `{
+		"TopicArn":"arn:aws:sns:eu-central-1:000000000000:json-sta-topic",
+		"AttributeName":"DisplayName",
+		"AttributeValue":"My JSON Topic"
+	}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- DeleteTopic cleans up subscriptions ---
+
+func TestXML_DeleteTopic_CleansUpSubscriptions(t *testing.T) {
+	h := newTestHandler()
+	postSNSQuery(h, "Action=CreateTopic&Name=cleanup-topic")
+	subRec := postSNSQuery(h, "Action=Subscribe"+
+		"&TopicArn=arn:aws:sns:eu-central-1:000000000000:cleanup-topic"+
+		"&Protocol=sqs"+
+		"&Endpoint=arn:aws:sqs:eu-central-1:000000000000:q")
+	require.Equal(t, http.StatusOK, subRec.Code)
+	subARN := extractXMLValue(subRec.Body.String(), "SubscriptionArn")
+	require.NotEmpty(t, subARN)
+
+	// Delete topic
+	postSNSQuery(h, "Action=DeleteTopic&TopicArn=arn:aws:sns:eu-central-1:000000000000:cleanup-topic")
+
+	// Subscription should no longer be found.
+	getSubRec := postSNSQuery(h, "Action=GetSubscriptionAttributes&SubscriptionArn="+subARN)
+	assert.Equal(t, http.StatusNotFound, getSubRec.Code)
 }

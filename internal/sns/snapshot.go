@@ -85,19 +85,27 @@ func (e *Engine) Restore(data []byte) error {
 	e.subscriptionsByARN = make(map[string]*Subscription)
 
 	for _, ts := range topics {
+		topicAttrs := ts.Attributes
+		if topicAttrs == nil {
+			topicAttrs = make(map[string]string)
+		}
 		t := &Topic{
 			Name:       ts.Name,
 			ARN:        ts.ARN,
-			Attributes: ts.Attributes,
+			Attributes: topicAttrs,
 		}
 
 		for _, ss := range ts.Subscriptions {
+			subAttrs := ss.Attributes
+			if subAttrs == nil {
+				subAttrs = make(map[string]string)
+			}
 			sub := &Subscription{
 				SubscriptionARN: ss.SubscriptionARN,
 				TopicARN:        ss.TopicARN,
 				Protocol:        ss.Protocol,
 				Endpoint:        ss.Endpoint,
-				Attributes:      ss.Attributes,
+				Attributes:      subAttrs,
 			}
 
 			// Re-parse cached filter policy.

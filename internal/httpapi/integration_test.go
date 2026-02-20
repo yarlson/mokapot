@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2248,4 +2249,228 @@ func TestIntegration_SNS_FilterPolicy_GetSubscriptionAttributes(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, filterPolicyJSON, gsaOut.Attributes["FilterPolicy"])
+}
+
+// --- ListQueues integration ---
+
+func TestIntegration_ListQueues(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	_, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{QueueName: aws.String("list-q-alpha")})
+	require.NoError(t, err)
+	_, err = client.CreateQueue(ctx, &awssqs.CreateQueueInput{QueueName: aws.String("list-q-beta")})
+	require.NoError(t, err)
+
+	out, err := client.ListQueues(ctx, &awssqs.ListQueuesInput{})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(out.QueueUrls), 2)
+
+	found := map[string]bool{}
+	for _, u := range out.QueueUrls {
+		if strings.Contains(u, "list-q-alpha") {
+			found["alpha"] = true
+		}
+		if strings.Contains(u, "list-q-beta") {
+			found["beta"] = true
+		}
+	}
+	assert.True(t, found["alpha"], "expected list-q-alpha in results")
+	assert.True(t, found["beta"], "expected list-q-beta in results")
+}
+
+func TestIntegration_ListQueues_WithPrefix(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	_, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{QueueName: aws.String("pfx-match-q")})
+	require.NoError(t, err)
+	_, err = client.CreateQueue(ctx, &awssqs.CreateQueueInput{QueueName: aws.String("pfx-other-q")})
+	require.NoError(t, err)
+	_, err = client.CreateQueue(ctx, &awssqs.CreateQueueInput{QueueName: aws.String("no-pfx-q")})
+	require.NoError(t, err)
+
+	out, err := client.ListQueues(ctx, &awssqs.ListQueuesInput{
+		QueueNamePrefix: aws.String("pfx-"),
+	})
+	require.NoError(t, err)
+	assert.Len(t, out.QueueUrls, 2)
+	for _, u := range out.QueueUrls {
+		assert.Contains(t, u, "pfx-")
+	}
+}
+
+// --- DeleteQueue integration ---
+
+func TestIntegration_DeleteQueue(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{QueueName: aws.String("delete-me-q")})
+	require.NoError(t, err)
+
+	_, err = client.DeleteQueue(ctx, &awssqs.DeleteQueueInput{QueueUrl: createOut.QueueUrl})
+	require.NoError(t, err)
+
+	// Queue should not be findable.
+	_, err = client.GetQueueUrl(ctx, &awssqs.GetQueueUrlInput{QueueName: aws.String("delete-me-q")})
+	require.Error(t, err)
+}
+
+// --- SNS ListTopics integration ---
+
+func TestIntegration_SNS_ListTopics(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	_, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{Name: aws.String("list-t-alpha")})
+	require.NoError(t, err)
+	_, err = s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{Name: aws.String("list-t-beta")})
+	require.NoError(t, err)
+
+	out, err := s.snsClient.ListTopics(ctx, &awssns.ListTopicsInput{})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(out.Topics), 2)
+
+	found := map[string]bool{}
+	for _, topic := range out.Topics {
+		if strings.Contains(*topic.TopicArn, "list-t-alpha") {
+			found["alpha"] = true
+		}
+		if strings.Contains(*topic.TopicArn, "list-t-beta") {
+			found["beta"] = true
+		}
+	}
+	assert.True(t, found["alpha"])
+	assert.True(t, found["beta"])
+}
+
+// --- SNS DeleteTopic integration ---
+
+func TestIntegration_SNS_DeleteTopic(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{Name: aws.String("del-t")})
+	require.NoError(t, err)
+
+	_, err = s.snsClient.DeleteTopic(ctx, &awssns.DeleteTopicInput{TopicArn: topicOut.TopicArn})
+	require.NoError(t, err)
+
+	// Topic should not appear in list.
+	listOut, err := s.snsClient.ListTopics(ctx, &awssns.ListTopicsInput{})
+	require.NoError(t, err)
+	for _, topic := range listOut.Topics {
+		assert.NotEqual(t, *topicOut.TopicArn, *topic.TopicArn)
+	}
+}
+
+// --- SNS ListSubscriptionsByTopic integration ---
+
+func TestIntegration_SNS_ListSubscriptionsByTopic(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	// Create queue and topic
+	createQ, err := s.sqsClient.CreateQueue(ctx, &awssqs.CreateQueueInput{QueueName: aws.String("lsbt-q")})
+	require.NoError(t, err)
+
+	queueARN := "arn:aws:sqs:eu-central-1:000000000000:lsbt-q"
+	_ = createQ
+
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{Name: aws.String("lsbt-t")})
+	require.NoError(t, err)
+
+	_, err = s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String(queueARN),
+	})
+	require.NoError(t, err)
+
+	out, err := s.snsClient.ListSubscriptionsByTopic(ctx, &awssns.ListSubscriptionsByTopicInput{
+		TopicArn: topicOut.TopicArn,
+	})
+	require.NoError(t, err)
+	assert.Len(t, out.Subscriptions, 1)
+	assert.Equal(t, "sqs", *out.Subscriptions[0].Protocol)
+	assert.Equal(t, queueARN, *out.Subscriptions[0].Endpoint)
+}
+
+// --- SNS Unsubscribe integration ---
+
+func TestIntegration_SNS_Unsubscribe(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{Name: aws.String("unsub-t")})
+	require.NoError(t, err)
+
+	subOut, err := s.snsClient.Subscribe(ctx, &awssns.SubscribeInput{
+		TopicArn: topicOut.TopicArn,
+		Protocol: aws.String("sqs"),
+		Endpoint: aws.String("arn:aws:sqs:eu-central-1:000000000000:unsub-q"),
+	})
+	require.NoError(t, err)
+
+	_, err = s.snsClient.Unsubscribe(ctx, &awssns.UnsubscribeInput{
+		SubscriptionArn: subOut.SubscriptionArn,
+	})
+	require.NoError(t, err)
+
+	// Verify subscription is gone.
+	listOut, err := s.snsClient.ListSubscriptionsByTopic(ctx, &awssns.ListSubscriptionsByTopicInput{
+		TopicArn: topicOut.TopicArn,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, listOut.Subscriptions)
+}
+
+// --- SNS GetTopicAttributes integration ---
+
+func TestIntegration_SNS_GetTopicAttributes(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{Name: aws.String("gta-t")})
+	require.NoError(t, err)
+
+	out, err := s.snsClient.GetTopicAttributes(ctx, &awssns.GetTopicAttributesInput{
+		TopicArn: topicOut.TopicArn,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, *topicOut.TopicArn, out.Attributes["TopicArn"])
+}
+
+// --- SNS SetTopicAttributes integration ---
+
+func TestIntegration_SNS_SetTopicAttributes(t *testing.T) {
+	s := newSNSIntegrationSetup(t)
+	defer s.server.Close()
+	ctx := context.Background()
+
+	topicOut, err := s.snsClient.CreateTopic(ctx, &awssns.CreateTopicInput{Name: aws.String("sta-t")})
+	require.NoError(t, err)
+
+	_, err = s.snsClient.SetTopicAttributes(ctx, &awssns.SetTopicAttributesInput{
+		TopicArn:       topicOut.TopicArn,
+		AttributeName:  aws.String("DisplayName"),
+		AttributeValue: aws.String("My Test Topic"),
+	})
+	require.NoError(t, err)
+
+	// Verify the attribute was set.
+	out, err := s.snsClient.GetTopicAttributes(ctx, &awssns.GetTopicAttributesInput{
+		TopicArn: topicOut.TopicArn,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "My Test Topic", out.Attributes["DisplayName"])
 }

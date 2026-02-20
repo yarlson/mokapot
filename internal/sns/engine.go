@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -99,6 +100,163 @@ func (e *Engine) CreateTopic(name string) (*Topic, error) {
 // topicByARN returns a topic by its ARN. Must be called with e.mu held.
 func (e *Engine) topicByARN(arn string) *Topic {
 	return e.topicsByARN[arn]
+}
+
+// ListTopics returns the ARNs of all topics.
+func (e *Engine) ListTopics() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	arns := make([]string, 0, len(e.topics))
+	for _, t := range e.topics {
+		arns = append(arns, t.ARN)
+	}
+	sort.Strings(arns)
+	return arns
+}
+
+// DeleteTopic removes a topic by ARN and cleans up its subscriptions.
+func (e *Engine) DeleteTopic(topicARN string) error {
+	if topicARN == "" {
+		return fmt.Errorf("%w: TopicArn is required", ErrInvalidParameter)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	topic := e.topicByARN(topicARN)
+	if topic == nil {
+		return ErrTopicNotFound
+	}
+
+	topic.mu.Lock()
+	subs := topic.Subscriptions
+	topic.mu.Unlock()
+
+	// Remove all subscriptions from the global index.
+	for _, sub := range subs {
+		delete(e.subscriptionsByARN, sub.SubscriptionARN)
+	}
+
+	delete(e.topics, topic.Name)
+	delete(e.topicsByARN, topicARN)
+
+	slog.Info("topic deleted", "topicArn", topicARN)
+	return nil
+}
+
+// ListSubscriptionsByTopic returns subscription info for all subscriptions to a topic.
+func (e *Engine) ListSubscriptionsByTopic(topicARN string) ([]map[string]string, error) {
+	if topicARN == "" {
+		return nil, fmt.Errorf("%w: TopicArn is required", ErrInvalidParameter)
+	}
+
+	e.mu.RLock()
+	topic := e.topicByARN(topicARN)
+	e.mu.RUnlock()
+
+	if topic == nil {
+		return nil, ErrTopicNotFound
+	}
+
+	topic.mu.Lock()
+	subs := make([]*Subscription, len(topic.Subscriptions))
+	copy(subs, topic.Subscriptions)
+	topic.mu.Unlock()
+
+	result := make([]map[string]string, 0, len(subs))
+	for _, sub := range subs {
+		result = append(result, map[string]string{
+			"SubscriptionArn": sub.SubscriptionARN,
+			"TopicArn":        sub.TopicARN,
+			"Protocol":        sub.Protocol,
+			"Endpoint":        sub.Endpoint,
+			"Owner":           e.accountID,
+		})
+	}
+	return result, nil
+}
+
+// Unsubscribe removes a subscription by ARN.
+func (e *Engine) Unsubscribe(subscriptionARN string) error {
+	if subscriptionARN == "" {
+		return fmt.Errorf("%w: SubscriptionArn is required", ErrInvalidParameter)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	sub, exists := e.subscriptionsByARN[subscriptionARN]
+	if !exists {
+		return ErrSubscriptionNotFound
+	}
+
+	// Remove from the topic's subscription list.
+	topic := e.topicByARN(sub.TopicARN)
+	if topic != nil {
+		topic.mu.Lock()
+		for i, s := range topic.Subscriptions {
+			if s.SubscriptionARN == subscriptionARN {
+				topic.Subscriptions = append(topic.Subscriptions[:i], topic.Subscriptions[i+1:]...)
+				break
+			}
+		}
+		topic.mu.Unlock()
+	}
+
+	delete(e.subscriptionsByARN, subscriptionARN)
+
+	slog.Info("subscription removed", "subscriptionArn", subscriptionARN)
+	return nil
+}
+
+// GetTopicAttributes returns the attributes for a topic.
+func (e *Engine) GetTopicAttributes(topicARN string) (map[string]string, error) {
+	if topicARN == "" {
+		return nil, fmt.Errorf("%w: TopicArn is required", ErrInvalidParameter)
+	}
+
+	e.mu.RLock()
+	topic := e.topicByARN(topicARN)
+	e.mu.RUnlock()
+
+	if topic == nil {
+		return nil, ErrTopicNotFound
+	}
+
+	topic.mu.Lock()
+	attrs := make(map[string]string, len(topic.Attributes)+1)
+	for k, v := range topic.Attributes {
+		attrs[k] = v
+	}
+	attrs["TopicArn"] = topic.ARN
+	topic.mu.Unlock()
+
+	return attrs, nil
+}
+
+// SetTopicAttributes sets a single attribute on a topic.
+func (e *Engine) SetTopicAttributes(topicARN, attrName, attrValue string) error {
+	if topicARN == "" {
+		return fmt.Errorf("%w: TopicArn is required", ErrInvalidParameter)
+	}
+	if attrName == "" {
+		return fmt.Errorf("%w: AttributeName is required", ErrInvalidParameter)
+	}
+
+	e.mu.RLock()
+	topic := e.topicByARN(topicARN)
+	e.mu.RUnlock()
+
+	if topic == nil {
+		return ErrTopicNotFound
+	}
+
+	topic.mu.Lock()
+	topic.Attributes[attrName] = attrValue
+	topic.mu.Unlock()
+
+	return nil
 }
 
 // Subscribe adds an SQS subscription to a topic.

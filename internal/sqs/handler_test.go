@@ -526,3 +526,96 @@ func extractAllReceiptHandles(xmlBody string) []string {
 	}
 	return handles
 }
+
+// --- Golden response shape: ListQueues ---
+
+func TestXML_ListQueues_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=list-queue-a")
+	postQuery(h, "/", "Action=CreateQueue&QueueName=list-queue-b")
+
+	rec := postQuery(h, "/", "Action=ListQueues")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ListQueuesResponse>")
+	assert.Contains(t, body, "<ListQueuesResult>")
+	assert.Contains(t, body, "<QueueUrl>")
+	assert.Contains(t, body, "list-queue-a")
+	assert.Contains(t, body, "list-queue-b")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_ListQueues_Empty_Shape(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postQuery(h, "/", "Action=ListQueues")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ListQueuesResponse>")
+	assert.Contains(t, body, "<ListQueuesResult>")
+	assert.NotContains(t, body, "<QueueUrl>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+}
+
+func TestXML_ListQueues_WithPrefix_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=prefix-match")
+	postQuery(h, "/", "Action=CreateQueue&QueueName=prefix-other")
+	postQuery(h, "/", "Action=CreateQueue&QueueName=nomatch")
+
+	rec := postQuery(h, "/", "Action=ListQueues&QueueNamePrefix=prefix-")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "prefix-match")
+	assert.Contains(t, body, "prefix-other")
+	assert.NotContains(t, body, "nomatch")
+}
+
+// --- Golden response shape: DeleteQueue ---
+
+func TestXML_DeleteQueue_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=del-q")
+
+	rec := postQuery(h, "/000000000000/del-q", "Action=DeleteQueue")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<DeleteQueueResponse>")
+	assert.Contains(t, body, "<ResponseMetadata>")
+	assert.Contains(t, body, "<RequestId>")
+
+	// Verify the queue is actually gone.
+	rec2 := postQuery(h, "/", "Action=GetQueueUrl&QueueName=del-q")
+	assert.Equal(t, http.StatusBadRequest, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "NonExistentQueue")
+}
+
+func TestXML_DeleteQueue_NonExistent_Shape(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postQuery(h, "/000000000000/nonexistent-q", "Action=DeleteQueue")
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ErrorResponse>")
+	assert.Contains(t, body, "<Code>AWS.SimpleQueueService.NonExistentQueue</Code>")
+	assert.Contains(t, body, "<RequestId>")
+}
+
+func TestXML_DeleteQueue_RemovedFromListQueues(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=keep-q")
+	postQuery(h, "/", "Action=CreateQueue&QueueName=remove-q")
+
+	postQuery(h, "/000000000000/remove-q", "Action=DeleteQueue")
+
+	rec := postQuery(h, "/", "Action=ListQueues")
+	body := rec.Body.String()
+	assert.Contains(t, body, "keep-q")
+	assert.NotContains(t, body, "remove-q")
+}

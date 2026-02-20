@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,8 +83,9 @@ func (q *Queue) SetAttribute(key, value string) {
 
 // Engine manages all SQS queues in memory.
 type Engine struct {
-	mu     sync.RWMutex
-	queues map[string]*Queue // queueName -> Queue
+	mu          sync.RWMutex
+	queues      map[string]*Queue // queueName -> Queue
+	queuesByARN map[string]*Queue // queueARN -> Queue
 
 	region    string
 	accountID string
@@ -93,11 +96,12 @@ type Engine struct {
 // NewEngine creates a new SQS engine.
 func NewEngine(region, accountID, host string) *Engine {
 	return &Engine{
-		queues:    make(map[string]*Queue),
-		region:    region,
-		accountID: accountID,
-		host:      host,
-		now:       time.Now,
+		queues:      make(map[string]*Queue),
+		queuesByARN: make(map[string]*Queue),
+		region:      region,
+		accountID:   accountID,
+		host:        host,
+		now:         time.Now,
 	}
 }
 
@@ -144,7 +148,43 @@ func (e *Engine) CreateQueue(name string) (*Queue, error) {
 	}
 
 	e.queues[name] = q
+	e.queuesByARN[q.ARN] = q
 	return q, nil
+}
+
+// ListQueues returns the URLs of all queues, optionally filtered by a name prefix.
+func (e *Engine) ListQueues(prefix string) []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	urls := make([]string, 0, len(e.queues))
+	for name, q := range e.queues {
+		if prefix == "" || strings.HasPrefix(name, prefix) {
+			urls = append(urls, q.URL)
+		}
+	}
+	sort.Strings(urls)
+	return urls
+}
+
+// DeleteQueue removes a queue by name.
+func (e *Engine) DeleteQueue(name string) error {
+	e.mu.Lock()
+	q, exists := e.queues[name]
+	if !exists {
+		e.mu.Unlock()
+		return ErrQueueDoesNotExist
+	}
+	delete(e.queues, name)
+	delete(e.queuesByARN, q.ARN)
+	e.mu.Unlock()
+
+	// Acquire queue lock as a barrier to ensure no in-flight operations remain.
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	slog.Info("queue deleted", "queue", name)
+	return nil
 }
 
 // GetQueueURL returns the URL for a queue by name.
@@ -197,12 +237,7 @@ func (e *Engine) GetQueueWaitTimeSeconds(name string) (int, error) {
 
 // queueByARN returns a queue by its ARN. Must be called with e.mu held (read or write).
 func (e *Engine) queueByARN(arn string) *Queue {
-	for _, q := range e.queues {
-		if q.ARN == arn {
-			return q
-		}
-	}
-	return nil
+	return e.queuesByARN[arn]
 }
 
 // GetQueueAttributes returns the requested attributes for a queue.
