@@ -1,0 +1,12 @@
+{
+  "name": "mokapot-nodejs-integration-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test sqs.test.mjs sns.test.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sns": "^3",
+    "@aws-sdk/client-sqs": "^3"
+  }
+}
