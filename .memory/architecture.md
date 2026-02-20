@@ -36,7 +36,7 @@ Query Parser (internal/query/query.go)
   │     │ — returns XML or JSON responses
   │     ▼
   │   SQS Engine (internal/sqs/engine.go)
-  │     │ — in-memory queue store (map[string]*Queue)
+  │     │ — in-memory queue store (map[string]*Queue + queuesByARN index)
   │     │ — per-queue: available []*Message, inflight map, waiter list
   │     │ — visibility timeout with lazy reappearance on ReceiveMessage
   │     │ — long polling: waiter channels notified on SendMessage; timer-based wakeup for visibility expiry and delayed message availability
@@ -46,6 +46,7 @@ Query Parser (internal/query/query.go)
   │     │ — PurgeQueue: clears all available and inflight messages; 60-second cooldown (PurgeQueueInProgress)
   │     │ — ChangeMessageVisibility: update visibility timeout of inflight message; 0 releases immediately and wakes long pollers
   │     │ — ChangeMessageVisibilityBatch: batch variant (up to 10) with partial failure
+  │     │ — ListQueues with optional prefix filter, DeleteQueue
   │     │ — Get/SetQueueAttributes: mutable attribute whitelist, numeric range validation, RedrivePolicy DLQ existence check
   │     │ — receipt handle regeneration + ReceiveCount tracking
   │     │ — injectable clock (now func() time.Time)
@@ -60,7 +61,7 @@ Query Parser (internal/query/query.go)
   │
   └─▶ SNS Handler (internal/sns/handler.go)
         │ — detects JSON vs Query protocol from Content-Type
-        │ — dispatches by Action (CreateTopic, Subscribe, Publish, Set/GetSubscriptionAttributes)
+        │ — dispatches by Action (CreateTopic, Subscribe, Publish, Set/GetSubscriptionAttributes, ListTopics, DeleteTopic, ListSubscriptionsByTopic, Unsubscribe, Get/SetTopicAttributes)
         │ — parses MessageAttributes from both JSON and Query protocols
         │ — returns XML or JSON responses
         ▼
@@ -69,7 +70,10 @@ Query Parser (internal/query/query.go)
         │ — per-topic: Subscriptions slice, per-topic mutex
         │ — global subscriptionsByARN index for direct subscription lookup
         │ — CreateTopic (idempotent), Subscribe (sqs only), Publish
+        │ — ListTopics, DeleteTopic (cascading subscription cleanup)
+        │ — ListSubscriptionsByTopic, Unsubscribe
         │ — Get/SetSubscriptionAttributes with per-subscription mutex
+        │ — Get/SetTopicAttributes
         │ — RawMessageDelivery: per-subscription toggle; Publish checks attribute and delivers raw body or SNS envelope
         │ — FilterPolicy: parsed and cached on SetSubscriptionAttributes; evaluated during Publish to skip non-matching subscribers
         │ — Publish builds SNS envelope (includes MessageAttributes), fans out via EnqueueFunc callback
@@ -103,7 +107,7 @@ Query Parser (internal/query/query.go)
 │   ├── 10 Raw delivery ✓
 │   └── 11 Filter policies ✓
 ├── 13 Persistence (bbolt) ✓
-└── 14 Housekeeping (CRUD lists)
+└── 14 Housekeeping (CRUD lists) ✓
 ```
 
 ## Key Design Decisions

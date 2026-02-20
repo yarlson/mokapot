@@ -24,7 +24,7 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 
 ### SQS
 
-- Queue creation: CreateQueue (idempotent), GetQueueUrl
+- Queue CRUD: CreateQueue (idempotent), GetQueueUrl, ListQueues (with optional prefix filter), DeleteQueue
 - Queue attributes: Get/SetQueueAttributes
 - Message lifecycle: SendMessage, ReceiveMessage, DeleteMessage
 - Batch operations: SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch (with partial failure, duplicate ID detection, batch size validation)
@@ -44,16 +44,13 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 - Get/SetSubscriptionAttributes: per-subscription attribute store with RawMessageDelivery validation (must be "true"/"false") and FilterPolicy validation (must be valid JSON with supported operators)
 - RawMessageDelivery: when enabled on a subscription, Publish delivers the plain message body instead of the SNS JSON envelope; per-subscription toggle, mixed raw/envelope fanout supported
 - FilterPolicy: per-subscription message filtering; supports exact string match, exact numeric match, prefix, exists/not-exists, anything-but (string/number/array), and numeric range operators (=, >, >=, <, <=); conditions within a key are OR'd, keys are AND'd; parsed and cached on SetSubscriptionAttributes; empty/nil policy passes all messages
+- Topic management: ListTopics, DeleteTopic (cascading subscription cleanup), Get/SetTopicAttributes
+- Subscription management: ListSubscriptionsByTopic, Unsubscribe
 - Dual protocol: AWS Query/XML and AWS JSON 1.0 (same as SQS)
-
-### SNS (not yet implemented)
-
-- DeleteTopic, ListTopics, Get/SetTopicAttributes
-- Unsubscribe, ListSubscriptionsByTopic
 
 ## System State
 
-SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, Publish, Get/SetSubscriptionAttributes, RawMessageDelivery, FilterPolicy) is operational. Optional bbolt persistence is operational.
+SQS and SNS are fully operational with complete CRUD, message lifecycle, fanout, filtering, and persistence.
 
 **Operational:**
 
@@ -62,7 +59,7 @@ SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, P
 - Graceful shutdown on SIGINT/SIGTERM
 - Structured JSON logging with configurable level
 - Dockerfile (multi-stage, alpine) and docker-compose.yml operational
-- SQS queue CRUD: CreateQueue (idempotent), GetQueueUrl, SendMessage, ReceiveMessage, DeleteMessage
+- SQS queue CRUD: CreateQueue (idempotent), GetQueueUrl, ListQueues (prefix filter), DeleteQueue, SendMessage, ReceiveMessage, DeleteMessage
 - Dual protocol support: AWS Query/XML and AWS JSON 1.0 (Go/JS SDK v3)
 - In-memory queue engine with per-queue mutex, visibility timeout, receipt handle tracking
 - Visibility timeout with automatic reappearance: expired inflight messages return to available pool with new receipt handles and incremented ReceiveCount
@@ -78,7 +75,7 @@ SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, P
 - Integration tests using real AWS SDK Go v2 client against test server
 - Optional bbolt persistence: `PERSISTENCE=bbolt` + `DATA_DIR` enables state snapshots to `state.db`; periodic save (30s) + graceful-shutdown save; full restore on startup (queues, topics, subscriptions, messages)
 
-**Not yet implemented:** DeleteQueue, ListQueues, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish+Get/SetSubscriptionAttributes
+**Not yet implemented:** FIFO queues, SNS delivery protocols beyond `sqs`
 
 ## Tech Stack
 
