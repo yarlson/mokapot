@@ -5,4 +5,13 @@ services:
       - "4566:4566"
     environment:
       PORT: "4566"
+      REGION: "eu-central-1"
+      ACCOUNT_ID: "000000000000"
+      PERSISTENCE: "bbolt"
+      DATA_DIR: "/data"
       LOG_LEVEL: "info"
+    volumes:
+      - messaging-data:/data
+
+volumes:
+  messaging-data:
