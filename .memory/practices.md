@@ -37,7 +37,7 @@ internal/httpapi/  — HTTP server, routing (health, root POST, queue-scoped POS
 internal/query/    — form-encoded request parser, XML response writer, error helpers
 internal/sqs/      — SQS handler (protocol dispatch) + engine (in-memory queue store)
 internal/sns/      — SNS handler (protocol dispatch) + engine (in-memory topic/subscription store, fanout delivery) + filter (filter policy parsing and evaluation)
-internal/store/    — interfaces + memory store + bbolt store (planned)
+internal/store/    — BoltStore: bbolt-backed persistence (SaveSQSState/LoadSQSState, SaveSNSState/LoadSNSState)
 internal/runtime/  — schedulers, waiter management (planned)
 internal/types/    — shared structs, canonical encodings (planned)
 ```
@@ -47,7 +47,7 @@ internal/types/    — shared structs, canonical encodings (planned)
 All via environment variables (optional, with defaults):
 
 - `PORT` (4566), `REGION` (eu-central-1), `ACCOUNT_ID` (000000000000), `SQS_HOST` (localhost)
-- `LOG_LEVEL` (info), `DATA_DIR` (empty = in-memory), `PERSISTENCE` (memory)
+- `LOG_LEVEL` (info), `PERSISTENCE` (memory | bbolt), `DATA_DIR` (required when PERSISTENCE=bbolt; path to directory for state.db)
 
 ## Concurrency Model
 
@@ -61,6 +61,7 @@ All via environment variables (optional, with defaults):
 - **FilterPolicy caching**: filter policies are parsed once during `SetSubscriptionAttributes` and stored as `cachedFilterPolicy` on the Subscription struct; Publish reads the cached policy under `RLock` — no JSON parsing on the hot path
 - **DLQ move is lazy**: happens inside `receiveFromQueue`, not via background goroutine
 - `ReceiveMessage` accepts `context.Context` — context cancellation terminates long polls gracefully
+- **Snapshot/Restore**: SQS and SNS engines expose `Snapshot()` / `Restore()` methods; snapshots are taken under engine-level locks; the two engine snapshots are not atomic relative to each other (a message published via SNS between them may appear in only one)
 
 ## Queue Attributes
 

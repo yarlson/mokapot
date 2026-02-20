@@ -43,3 +43,7 @@
 **EnqueueFunc** — `func(queueName, body string) error` callback injected into the SNS engine for delivering messages to SQS without a direct package dependency
 
 **bbolt** — embedded key-value store used as optional persistence backend (`DATA_DIR/state.db`)
+
+**BoltStore** — wrapper around bbolt in `internal/store/store.go`; provides `SaveSQSState`/`LoadSQSState` and `SaveSNSState`/`LoadSNSState`; JSON-encodes snapshot structs into bbolt buckets
+
+**Snapshot** — point-in-time serializable representation of an engine's state (queues, messages, topics, subscriptions); produced by `Engine.Snapshot()` and consumed by `Engine.Restore()`

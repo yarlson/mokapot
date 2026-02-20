@@ -12,7 +12,9 @@ HTTP POST to http://messaging:4566/
   ▼
 mokapot (cmd/mokapot/main.go)
   │ — configures slog JSON logger
+  │ — opens BoltStore if PERSISTENCE=bbolt (restores state on startup)
   │ — starts http.Server with timeouts
+  │ — periodic state save (30s) + final save on shutdown
   │ — graceful shutdown on SIGINT/SIGTERM
   │
   ▼
@@ -50,9 +52,11 @@ Query Parser (internal/query/query.go)
   │     │ — context-aware ReceiveMessage (cancellable long polls)
   │     │ — thread-safe via sync.RWMutex + per-queue sync.Mutex
   │
-  ├─▶ Store Interface (planned: internal/store/)
-  │     ├─ memory (default)
-  │     └─ bbolt (optional persistence)
+  ├─▶ BoltStore (internal/store/store.go)
+  │     │ — bbolt-backed persistence (DATA_DIR/state.db)
+  │     │ — SaveSQSState / LoadSQSState: serialize SQS engine snapshot to "sqs" bucket
+  │     │ — SaveSNSState / LoadSNSState: serialize SNS engine snapshot to "sns" bucket
+  │     │ — JSON encoding of snapshot structs
   │
   └─▶ SNS Handler (internal/sns/handler.go)
         │ — detects JSON vs Query protocol from Content-Type
@@ -98,7 +102,7 @@ Query Parser (internal/query/query.go)
 ├── 9  SNS fanout (envelope) ✓
 │   ├── 10 Raw delivery ✓
 │   └── 11 Filter policies ✓
-├── 13 Persistence (bbolt)
+├── 13 Persistence (bbolt) ✓
 └── 14 Housekeeping (CRUD lists)
 ```
 
@@ -117,8 +121,9 @@ Query Parser (internal/query/query.go)
 
 - Multi-stage build: `golang:1.25-alpine` → `alpine:3.21`
 - Non-root user (`appuser`)
+- `/data` directory created and owned by `appuser` for persistence
 - Exposes port 4566
-- Configurable via environment variables in docker-compose
+- docker-compose: `PERSISTENCE=bbolt`, `DATA_DIR=/data`, named volume `messaging-data`
 
 ## Defaults
 

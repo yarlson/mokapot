@@ -53,7 +53,7 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 
 ## System State
 
-SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, Publish, Get/SetSubscriptionAttributes, RawMessageDelivery, FilterPolicy) is operational.
+SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, Publish, Get/SetSubscriptionAttributes, RawMessageDelivery, FilterPolicy) is operational. Optional bbolt persistence is operational.
 
 **Operational:**
 
@@ -76,8 +76,9 @@ SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, P
 - ChangeMessageVisibilityBatch: batch variant (up to 10 entries) with partial failure support, duplicate ID detection, per-entry error isolation
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
+- Optional bbolt persistence: `PERSISTENCE=bbolt` + `DATA_DIR` enables state snapshots to `state.db`; periodic save (30s) + graceful-shutdown save; full restore on startup (queues, topics, subscriptions, messages)
 
-**Not yet implemented:** DeleteQueue, ListQueues, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish+Get/SetSubscriptionAttributes, persistence
+**Not yet implemented:** DeleteQueue, ListQueues, SNS topic/subscription CRUD beyond CreateTopic+Subscribe+Publish+Get/SetSubscriptionAttributes
 
 ## Tech Stack
 
@@ -88,4 +89,5 @@ SQS core message lifecycle is operational. SNS fanout (CreateTopic, Subscribe, P
 - **Logging:** `log/slog` with JSON handler
 - **Container:** Alpine-based multi-stage Docker build
 - **Orchestration:** docker-compose
+- **Persistence:** `go.etcd.io/bbolt` (optional)
 - **IDs:** `github.com/google/uuid`
