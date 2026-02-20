@@ -1,6 +1,6 @@
 services:
   messaging:
-    build: .
+    image: yarlson/mokapot:latest
     ports:
       - "4566:4566"
     environment:

@@ -619,3 +619,48 @@ func TestXML_DeleteQueue_RemovedFromListQueues(t *testing.T) {
 	assert.Contains(t, body, "keep-q")
 	assert.NotContains(t, body, "remove-q")
 }
+
+// --- Golden response shape: SendMessage with MessageAttributes ---
+
+func TestXML_SendMessage_WithAttributes_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=attr-send-queue")
+
+	rec := postQuery(h, "/000000000000/attr-send-queue",
+		"Action=SendMessage&MessageBody=test"+
+			"&MessageAttribute.1.Name=Color"+
+			"&MessageAttribute.1.Value.DataType=String"+
+			"&MessageAttribute.1.Value.StringValue=blue")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<SendMessageResponse>")
+	assert.Contains(t, body, "<MD5OfMessageBody>")
+	assert.Contains(t, body, "<MD5OfMessageAttributes>")
+	assert.Contains(t, body, "<MessageId>")
+}
+
+// --- Golden response shape: ReceiveMessage with MessageAttributes ---
+
+func TestXML_ReceiveMessage_WithAttributes_Shape(t *testing.T) {
+	h := newTestHandler()
+	postQuery(h, "/", "Action=CreateQueue&QueueName=attr-recv-queue")
+	postQuery(h, "/000000000000/attr-recv-queue",
+		"Action=SendMessage&MessageBody=test"+
+			"&MessageAttribute.1.Name=Color"+
+			"&MessageAttribute.1.Value.DataType=String"+
+			"&MessageAttribute.1.Value.StringValue=red")
+
+	rec := postQuery(h, "/000000000000/attr-recv-queue",
+		"Action=ReceiveMessage&MaxNumberOfMessages=1"+
+			"&MessageAttributeName.1=All")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "<ReceiveMessageResponse>")
+	assert.Contains(t, body, "<MD5OfMessageAttributes>")
+	assert.Contains(t, body, "<MessageAttribute>")
+	assert.Contains(t, body, "<Name>Color</Name>")
+	assert.Contains(t, body, "<DataType>String</DataType>")
+	assert.Contains(t, body, "<StringValue>red</StringValue>")
+}

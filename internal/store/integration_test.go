@@ -32,11 +32,11 @@ func TestPersistence_SQSSurvivesRestart(t *testing.T) {
 		"VisibilityTimeout": "120",
 	}))
 
-	_, err = e1.SendMessage("orders", "order-1", -1)
+	_, err = e1.SendMessage("orders", "order-1", -1, nil)
 	require.NoError(t, err)
-	_, err = e1.SendMessage("orders", "order-2", -1)
+	_, err = e1.SendMessage("orders", "order-2", -1, nil)
 	require.NoError(t, err)
-	_, err = e1.SendMessage("notifications", "notify-1", -1)
+	_, err = e1.SendMessage("notifications", "notify-1", -1, nil)
 	require.NoError(t, err)
 
 	data, err := e1.Snapshot()
@@ -162,7 +162,7 @@ func TestPersistence_FullStackSurvivesRestart(t *testing.T) {
 	// Phase 1: set up SQS queue, SNS topic with subscription, send via SNS.
 	sqsEngine1 := sqs.NewEngine("eu-central-1", "000000000000", "localhost:4566")
 	enqueue1 := func(queueName, body string) error {
-		_, err := sqsEngine1.SendMessage(queueName, body, 0)
+		_, err := sqsEngine1.SendMessage(queueName, body, 0, nil)
 		return err
 	}
 	snsEngine1 := sns.NewEngine("eu-central-1", "000000000000", enqueue1)
@@ -181,7 +181,7 @@ func TestPersistence_FullStackSurvivesRestart(t *testing.T) {
 	require.NoError(t, err)
 
 	// Also send a direct SQS message.
-	_, err = sqsEngine1.SendMessage("fan-q", "direct-msg", -1)
+	_, err = sqsEngine1.SendMessage("fan-q", "direct-msg", -1, nil)
 	require.NoError(t, err)
 
 	// Snapshot and persist both engines.
@@ -210,7 +210,7 @@ func TestPersistence_FullStackSurvivesRestart(t *testing.T) {
 	require.NoError(t, sqsEngine2.Restore(sqsData2))
 
 	enqueue2 := func(queueName, body string) error {
-		_, err := sqsEngine2.SendMessage(queueName, body, 0)
+		_, err := sqsEngine2.SendMessage(queueName, body, 0, nil)
 		return err
 	}
 	snsEngine2 := sns.NewEngine("eu-central-1", "000000000000", enqueue2)

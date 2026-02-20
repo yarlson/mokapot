@@ -1,0 +1,71 @@
+version: 2
+
+project_name: mokapot
+
+release:
+  github:
+    owner: yarlson
+    name: mokapot
+
+builds:
+  - id: mokapot
+    main: ./cmd/mokapot
+    binary: mokapot
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: mokapot
+    ids:
+      - mokapot
+    formats:
+      - tar.gz
+
+checksum:
+  name_template: checksums.txt
+
+homebrew_casks:
+  - name: mokapot
+    ids:
+      - mokapot
+    binaries:
+      - mokapot
+    repository:
+      owner: yarlson
+      name: homebrew-tap
+      branch: main
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    commit_msg_template: "chore(cask): update mokapot to {{ .Tag }}"
+    directory: Casks
+    homepage: https://github.com/yarlson/mokapot
+    description: Local AWS mock. One binary, zero credentials.
+    skip_upload: "{{ .IsSnapshot }}"
+
+dockers_v2:
+  - id: mokapot
+    ids:
+      - mokapot
+    dockerfile: Dockerfile
+    images:
+      - yarlson/mokapot
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: Local AWS mock
+      org.opencontainers.image.url: https://github.com/yarlson/mokapot
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"

@@ -32,7 +32,7 @@ func newIntegrationSetup(t *testing.T) (*awssqs.Client, *httptest.Server, *sqs.E
 	sqsHandler := sqs.NewHandler(sqsEngine)
 
 	enqueue := func(queueName, body string) error {
-		_, err := sqsEngine.SendMessage(queueName, body, 0)
+		_, err := sqsEngine.SendMessage(queueName, body, 0, nil)
 		return err
 	}
 	snsEngine := sns.NewEngine("eu-central-1", "000000000000", enqueue)
@@ -1326,7 +1326,7 @@ func newSNSIntegrationSetup(t *testing.T) *snsIntegrationSetup {
 	sqsHandler := sqs.NewHandler(sqsEngine)
 
 	enqueue := func(queueName, body string) error {
-		_, err := sqsEngine.SendMessage(queueName, body, 0)
+		_, err := sqsEngine.SendMessage(queueName, body, 0, nil)
 		return err
 	}
 	snsEngine := sns.NewEngine("eu-central-1", "000000000000", enqueue)
@@ -2473,4 +2473,265 @@ func TestIntegration_SNS_SetTopicAttributes(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "My Test Topic", out.Attributes["DisplayName"])
+}
+
+// --- Message Attributes tests ---
+
+func TestIntegration_SendMessage_WithAttributes(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("attr-queue"),
+	})
+	require.NoError(t, err)
+
+	sendOut, err := client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    createOut.QueueUrl,
+		MessageBody: aws.String("body with attrs"),
+		MessageAttributes: map[string]sqstypes.MessageAttributeValue{
+			"Color": {
+				DataType:    aws.String("String"),
+				StringValue: aws.String("blue"),
+			},
+			"Count": {
+				DataType:    aws.String("Number"),
+				StringValue: aws.String("42"),
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, *sendOut.MessageId)
+	assert.NotEmpty(t, *sendOut.MD5OfMessageBody)
+	assert.NotNil(t, sendOut.MD5OfMessageAttributes)
+	assert.NotEmpty(t, *sendOut.MD5OfMessageAttributes)
+
+	// Receive and request all message attributes.
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:              createOut.QueueUrl,
+		MaxNumberOfMessages:   1,
+		MessageAttributeNames: []string{"All"},
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+
+	msg := recvOut.Messages[0]
+	assert.Equal(t, "body with attrs", *msg.Body)
+
+	// Verify MD5 of message attributes round-trips.
+	assert.Equal(t, *sendOut.MD5OfMessageAttributes, *msg.MD5OfMessageAttributes)
+
+	// Verify attributes are present.
+	require.Contains(t, msg.MessageAttributes, "Color")
+	assert.Equal(t, "String", *msg.MessageAttributes["Color"].DataType)
+	assert.Equal(t, "blue", *msg.MessageAttributes["Color"].StringValue)
+
+	require.Contains(t, msg.MessageAttributes, "Count")
+	assert.Equal(t, "Number", *msg.MessageAttributes["Count"].DataType)
+	assert.Equal(t, "42", *msg.MessageAttributes["Count"].StringValue)
+}
+
+func TestIntegration_ReceiveMessage_AttributeFiltering(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("attr-filter-queue"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    createOut.QueueUrl,
+		MessageBody: aws.String("multi-attr"),
+		MessageAttributes: map[string]sqstypes.MessageAttributeValue{
+			"Color": {
+				DataType:    aws.String("String"),
+				StringValue: aws.String("red"),
+			},
+			"Size": {
+				DataType:    aws.String("String"),
+				StringValue: aws.String("large"),
+			},
+			"Weight": {
+				DataType:    aws.String("Number"),
+				StringValue: aws.String("10"),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Only request "Color" — should not see "Size" or "Weight".
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:              createOut.QueueUrl,
+		MaxNumberOfMessages:   1,
+		MessageAttributeNames: []string{"Color"},
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+
+	msg := recvOut.Messages[0]
+	assert.Contains(t, msg.MessageAttributes, "Color")
+	assert.NotContains(t, msg.MessageAttributes, "Size")
+	assert.NotContains(t, msg.MessageAttributes, "Weight")
+}
+
+func TestIntegration_ReceiveMessage_NoAttributeFilter_ReturnsNone(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("no-filter-queue"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    createOut.QueueUrl,
+		MessageBody: aws.String("has attrs"),
+		MessageAttributes: map[string]sqstypes.MessageAttributeValue{
+			"Foo": {
+				DataType:    aws.String("String"),
+				StringValue: aws.String("bar"),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Do not request any message attributes — should get none.
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:            createOut.QueueUrl,
+		MaxNumberOfMessages: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 1)
+	assert.Empty(t, recvOut.Messages[0].MessageAttributes)
+
+	// But MD5 should still be present.
+	assert.NotNil(t, recvOut.Messages[0].MD5OfMessageAttributes)
+}
+
+func TestIntegration_SendMessage_NoAttributes_NoMD5(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("no-attr-queue"),
+	})
+	require.NoError(t, err)
+
+	sendOut, err := client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:    createOut.QueueUrl,
+		MessageBody: aws.String("plain message"),
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, *sendOut.MessageId)
+	// No message attributes → no MD5OfMessageAttributes.
+	assert.Nil(t, sendOut.MD5OfMessageAttributes)
+}
+
+func TestIntegration_SendMessageBatch_WithAttributes(t *testing.T) {
+	client, ts := newIntegrationClient(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	createOut, err := client.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String("batch-attr-queue"),
+	})
+	require.NoError(t, err)
+
+	batchOut, err := client.SendMessageBatch(ctx, &awssqs.SendMessageBatchInput{
+		QueueUrl: createOut.QueueUrl,
+		Entries: []sqstypes.SendMessageBatchRequestEntry{
+			{
+				Id:          aws.String("1"),
+				MessageBody: aws.String("msg with attr"),
+				MessageAttributes: map[string]sqstypes.MessageAttributeValue{
+					"Tag": {
+						DataType:    aws.String("String"),
+						StringValue: aws.String("important"),
+					},
+				},
+			},
+			{
+				Id:          aws.String("2"),
+				MessageBody: aws.String("msg without attr"),
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, batchOut.Successful, 2)
+
+	// Entry with attributes should have MD5.
+	var withAttr, withoutAttr *sqstypes.SendMessageBatchResultEntry
+	for i := range batchOut.Successful {
+		if *batchOut.Successful[i].Id == "1" {
+			withAttr = &batchOut.Successful[i]
+		} else {
+			withoutAttr = &batchOut.Successful[i]
+		}
+	}
+	require.NotNil(t, withAttr)
+	assert.NotNil(t, withAttr.MD5OfMessageAttributes)
+	assert.NotEmpty(t, *withAttr.MD5OfMessageAttributes)
+
+	require.NotNil(t, withoutAttr)
+	assert.Nil(t, withoutAttr.MD5OfMessageAttributes)
+
+	// Receive both and verify attributes.
+	recvOut, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		QueueUrl:              createOut.QueueUrl,
+		MaxNumberOfMessages:   10,
+		MessageAttributeNames: []string{"All"},
+	})
+	require.NoError(t, err)
+	require.Len(t, recvOut.Messages, 2)
+
+	attrCount := 0
+	for _, m := range recvOut.Messages {
+		if len(m.MessageAttributes) > 0 {
+			attrCount++
+			assert.Equal(t, "important", *m.MessageAttributes["Tag"].StringValue)
+		}
+	}
+	assert.Equal(t, 1, attrCount)
+}
+
+func TestIntegration_MessageAttributes_SurviveRestart(t *testing.T) {
+	// Test that message attributes persist through snapshot/restore.
+	sqsEngine := sqs.NewEngine("eu-central-1", "000000000000", "placeholder")
+
+	_, err := sqsEngine.CreateQueue("persist-attr-queue")
+	require.NoError(t, err)
+
+	_, err = sqsEngine.SendMessage("persist-attr-queue", "body", -1, map[string]sqs.MessageAttribute{
+		"Key1": {DataType: "String", StringValue: "Value1"},
+		"Key2": {DataType: "Number", StringValue: "123"},
+	})
+	require.NoError(t, err)
+
+	// Snapshot.
+	data, err := sqsEngine.Snapshot()
+	require.NoError(t, err)
+
+	// Restore into a new engine.
+	sqsEngine2 := sqs.NewEngine("eu-central-1", "000000000000", "placeholder")
+	err = sqsEngine2.Restore(data)
+	require.NoError(t, err)
+
+	// Receive and verify attributes.
+	ctx := context.Background()
+	msgs, err := sqsEngine2.ReceiveMessage(ctx, "persist-attr-queue", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+
+	assert.NotEmpty(t, msgs[0].MD5OfMessageAttributes)
+	require.Contains(t, msgs[0].MessageAttributes, "Key1")
+	assert.Equal(t, "String", msgs[0].MessageAttributes["Key1"].DataType)
+	assert.Equal(t, "Value1", msgs[0].MessageAttributes["Key1"].StringValue)
+	require.Contains(t, msgs[0].MessageAttributes, "Key2")
+	assert.Equal(t, "Number", msgs[0].MessageAttributes["Key2"].DataType)
+	assert.Equal(t, "123", msgs[0].MessageAttributes["Key2"].StringValue)
 }

@@ -67,7 +67,7 @@ func TestSendAndReceiveMessage(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	msg, err := e.SendMessage("q", "hello world", -1)
+	msg, err := e.SendMessage("q", "hello world", -1, nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, msg.MessageID)
 	assert.Equal(t, "hello world", msg.Body)
@@ -109,7 +109,7 @@ func TestDeleteMessage(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg1", -1)
+	_, err = e.SendMessage("q", "msg1", -1, nil)
 	require.NoError(t, err)
 
 	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
@@ -138,7 +138,7 @@ func TestDeleteMessageInvalidHandle(t *testing.T) {
 func TestSendToNonExistentQueue(t *testing.T) {
 	e := newEngine()
 
-	_, err := e.SendMessage("nope", "body", -1)
+	_, err := e.SendMessage("nope", "body", -1, nil)
 	assert.ErrorIs(t, err, sqs.ErrQueueDoesNotExist)
 }
 
@@ -150,7 +150,7 @@ func TestReceiveMaxMessages(t *testing.T) {
 	require.NoError(t, err)
 
 	for i := range 5 {
-		_, err = e.SendMessage("q", fmt.Sprintf("msg%d", i), -1)
+		_, err = e.SendMessage("q", fmt.Sprintf("msg%d", i), -1, nil)
 		require.NoError(t, err)
 	}
 
@@ -171,7 +171,7 @@ func TestMessageInvisibleAfterReceive(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg", -1)
+	_, err = e.SendMessage("q", "msg", -1, nil)
 	require.NoError(t, err)
 
 	// Receive with a long visibility timeout
@@ -192,7 +192,7 @@ func TestMessageReappearsAfterVisibilityTimeout(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	sent, err := e.SendMessage("q", "retry-me", -1)
+	sent, err := e.SendMessage("q", "retry-me", -1, nil)
 	require.NoError(t, err)
 
 	// Receive with zero visibility timeout — message becomes available on next call
@@ -223,7 +223,7 @@ func TestOldReceiptHandleInvalidAfterReappearance(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg", -1)
+	_, err = e.SendMessage("q", "msg", -1, nil)
 	require.NoError(t, err)
 
 	// Receive with zero visibility timeout
@@ -253,7 +253,7 @@ func TestMultipleReappearancesIncrementReceiveCount(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "persistent", -1)
+	_, err = e.SendMessage("q", "persistent", -1, nil)
 	require.NoError(t, err)
 
 	// Receive the same message 5 times without deleting
@@ -275,7 +275,7 @@ func TestLongPolling_ReturnsImmediatelyWhenMessagesAvailable(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "already here", -1)
+	_, err = e.SendMessage("q", "already here", -1, nil)
 	require.NoError(t, err)
 
 	// Long polling with WaitTimeSeconds=5, but message already available
@@ -306,7 +306,7 @@ func TestLongPolling_BlocksUntilMessageArrives(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Send a message to wake the waiter
-	_, err = e.SendMessage("q", "arrived later", -1)
+	_, err = e.SendMessage("q", "arrived later", -1, nil)
 	require.NoError(t, err)
 
 	wg.Wait()
@@ -366,7 +366,7 @@ func TestLongPolling_WakesOnVisibilityExpiry(t *testing.T) {
 	require.NoError(t, err)
 
 	// Send a message and receive it with a short visibility timeout
-	_, err = e.SendMessage("q", "will-expire", -1)
+	_, err = e.SendMessage("q", "will-expire", -1, nil)
 	require.NoError(t, err)
 
 	received, err := e.ReceiveMessage(ctx, "q", 1, 1, 0) // 1 second visibility
@@ -416,7 +416,7 @@ func TestLongPolling_MultipleWaitersAllWake(t *testing.T) {
 
 	// Send enough messages for all waiters
 	for i := range numWaiters {
-		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1)
+		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1, nil)
 		require.NoError(t, err)
 	}
 
@@ -447,7 +447,7 @@ func TestDelayedMessage_NotReceivableBeforeDelay(t *testing.T) {
 	require.NoError(t, err)
 
 	// Send with 10-second delay
-	_, err = e.SendMessage("q", "delayed", 10)
+	_, err = e.SendMessage("q", "delayed", 10, nil)
 	require.NoError(t, err)
 
 	// Try to receive immediately — should be empty
@@ -474,7 +474,7 @@ func TestDelayedMessage_ReceivableAfterDelay(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	sent, err := e.SendMessage("q", "delayed", 10)
+	sent, err := e.SendMessage("q", "delayed", 10, nil)
 	require.NoError(t, err)
 
 	// Advance clock past the delay
@@ -495,7 +495,7 @@ func TestDelayedMessage_ZeroDelayIsImmediate(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "no-delay", 0)
+	_, err = e.SendMessage("q", "no-delay", 0, nil)
 	require.NoError(t, err)
 
 	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
@@ -518,7 +518,7 @@ func TestDelayedMessage_QueueDefaultDelay(t *testing.T) {
 	q.SetAttribute("DelaySeconds", "5")
 
 	// Send with -1 (use queue default)
-	_, err = e.SendMessage("q", "queue-delayed", -1)
+	_, err = e.SendMessage("q", "queue-delayed", -1, nil)
 	require.NoError(t, err)
 
 	// Not receivable immediately
@@ -549,7 +549,7 @@ func TestDelayedMessage_PerMessageOverridesQueueDefault(t *testing.T) {
 	// Queue default is 60s, but message has 2s delay
 	q.SetAttribute("DelaySeconds", "60")
 
-	_, err = e.SendMessage("q", "short-delay", 2)
+	_, err = e.SendMessage("q", "short-delay", 2, nil)
 	require.NoError(t, err)
 
 	// Not available at t=0
@@ -578,10 +578,10 @@ func TestDelayedMessage_MixedDelayedAndImmediate(t *testing.T) {
 	require.NoError(t, err)
 
 	// Send one delayed and one immediate message
-	_, err = e.SendMessage("q", "delayed-msg", 10)
+	_, err = e.SendMessage("q", "delayed-msg", 10, nil)
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "immediate-msg", 0)
+	_, err = e.SendMessage("q", "immediate-msg", 0, nil)
 	require.NoError(t, err)
 
 	// Only the immediate message should be receivable
@@ -607,7 +607,7 @@ func TestDelayedMessage_LongPollWakesWhenDelayExpires(t *testing.T) {
 	require.NoError(t, err)
 
 	// Send a delayed message (1 second delay)
-	_, err = e.SendMessage("q", "delayed-poll", 1)
+	_, err = e.SendMessage("q", "delayed-poll", 1, nil)
 	require.NoError(t, err)
 
 	// Long poll should wake when the delay expires and return the message
@@ -725,7 +725,7 @@ func TestDLQ_MessageMovedAfterMaxReceiveCount(t *testing.T) {
 	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("source", "poison", -1)
+	_, err = e.SendMessage("source", "poison", -1, nil)
 	require.NoError(t, err)
 
 	// Receive 3 times without deleting (visibility timeout = 0 so reappears immediately)
@@ -771,9 +771,9 @@ func TestDLQ_OnlyPoisonMessageMoved(t *testing.T) {
 	require.NoError(t, err)
 
 	// Send two messages
-	_, err = e.SendMessage("source", "poison", -1)
+	_, err = e.SendMessage("source", "poison", -1, nil)
 	require.NoError(t, err)
-	_, err = e.SendMessage("source", "healthy", -1)
+	_, err = e.SendMessage("source", "healthy", -1, nil)
 	require.NoError(t, err)
 
 	// Receive both, delete the healthy one, let the poison one reappear
@@ -814,7 +814,7 @@ func TestDLQ_NoPolicyNoMove(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg", -1)
+	_, err = e.SendMessage("q", "msg", -1, nil)
 	require.NoError(t, err)
 
 	// Receive 10 times without deleting — no DLQ, message keeps reappearing
@@ -843,7 +843,7 @@ func TestDLQ_MaxReceiveCountOne(t *testing.T) {
 	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("source", "once", -1)
+	_, err = e.SendMessage("source", "once", -1, nil)
 	require.NoError(t, err)
 
 	// First receive succeeds
@@ -884,7 +884,7 @@ func TestDLQ_VisibilityExpiryThenDLQ(t *testing.T) {
 	err = e.SetQueueAttributes("source", map[string]string{"RedrivePolicy": string(rp)})
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("source", "expire-then-dlq", -1)
+	_, err = e.SendMessage("source", "expire-then-dlq", -1, nil)
 	require.NoError(t, err)
 
 	// Receive #1 with 5-second visibility
@@ -1046,7 +1046,7 @@ func TestDeleteMessageBatch(t *testing.T) {
 
 	// Send 3 messages
 	for i := range 3 {
-		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1)
+		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1, nil)
 		require.NoError(t, err)
 	}
 
@@ -1082,7 +1082,7 @@ func TestDeleteMessageBatch_PartialFailure(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg", -1)
+	_, err = e.SendMessage("q", "msg", -1, nil)
 	require.NoError(t, err)
 
 	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
@@ -1148,7 +1148,7 @@ func TestPurgeQueue(t *testing.T) {
 
 	// Send several messages
 	for i := range 5 {
-		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1)
+		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1, nil)
 		require.NoError(t, err)
 	}
 
@@ -1172,7 +1172,7 @@ func TestPurgeQueue_ClearsInflight(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "inflight-msg", -1)
+	_, err = e.SendMessage("q", "inflight-msg", -1, nil)
 	require.NoError(t, err)
 
 	// Receive (makes it inflight)
@@ -1219,14 +1219,14 @@ func TestPurgeQueue_QueueStillUsable(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "before-purge", -1)
+	_, err = e.SendMessage("q", "before-purge", -1, nil)
 	require.NoError(t, err)
 
 	err = e.PurgeQueue("q")
 	require.NoError(t, err)
 
 	// Queue should still be usable after purge
-	_, err = e.SendMessage("q", "after-purge", -1)
+	_, err = e.SendMessage("q", "after-purge", -1, nil)
 	require.NoError(t, err)
 
 	received, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
@@ -1278,7 +1278,7 @@ func TestPurgeQueue_ClearsDelayedMessages(t *testing.T) {
 	require.NoError(t, err)
 
 	// Send a delayed message (10-second delay)
-	_, err = e.SendMessage("q", "delayed-msg", 10)
+	_, err = e.SendMessage("q", "delayed-msg", 10, nil)
 	require.NoError(t, err)
 
 	// Purge
@@ -1307,7 +1307,7 @@ func TestChangeMessageVisibility_ExtendTimeout(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg", -1)
+	_, err = e.SendMessage("q", "msg", -1, nil)
 	require.NoError(t, err)
 
 	// Receive with 5-second visibility
@@ -1347,7 +1347,7 @@ func TestChangeMessageVisibility_SetToZero_ReleasesImmediately(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "nack-me", -1)
+	_, err = e.SendMessage("q", "nack-me", -1, nil)
 	require.NoError(t, err)
 
 	// Receive with long visibility
@@ -1407,7 +1407,7 @@ func TestChangeMessageVisibility_OldHandleInvalidAfterZero(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg", -1)
+	_, err = e.SendMessage("q", "msg", -1, nil)
 	require.NoError(t, err)
 
 	received, err := e.ReceiveMessage(ctx, "q", 1, 300, 0)
@@ -1430,7 +1430,7 @@ func TestChangeMessageVisibility_SetToZero_WakesLongPollers(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "wake-msg", -1)
+	_, err = e.SendMessage("q", "wake-msg", -1, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -1482,7 +1482,7 @@ func TestChangeMessageVisibilityBatch(t *testing.T) {
 
 	// Send 3 messages
 	for i := range 3 {
-		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1)
+		_, err = e.SendMessage("q", fmt.Sprintf("msg-%d", i), -1, nil)
 		require.NoError(t, err)
 	}
 
@@ -1523,7 +1523,7 @@ func TestChangeMessageVisibilityBatch_PartialFailure(t *testing.T) {
 	_, err := e.CreateQueue("q")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("q", "msg", -1)
+	_, err = e.SendMessage("q", "msg", -1, nil)
 	require.NoError(t, err)
 
 	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
@@ -1576,4 +1576,154 @@ func TestChangeMessageVisibilityBatch_DuplicateIDs(t *testing.T) {
 
 	_, err = e.ChangeMessageVisibilityBatch("q", entries)
 	assert.ErrorIs(t, err, sqs.ErrBatchEntryIdsNotDistinct)
+}
+
+// --- Message Attributes tests ---
+
+func TestSendMessageWithAttributes(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	attrs := map[string]sqs.MessageAttribute{
+		"Color": {DataType: "String", StringValue: "blue"},
+		"Count": {DataType: "Number", StringValue: "42"},
+	}
+
+	msg, err := e.SendMessage("q", "body", -1, attrs)
+	require.NoError(t, err)
+	assert.NotEmpty(t, msg.MD5OfMessageAttributes)
+	assert.Equal(t, "blue", msg.MessageAttributes["Color"].StringValue)
+	assert.Equal(t, "42", msg.MessageAttributes["Count"].StringValue)
+
+	// Receive and verify attributes come back.
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, msg.MD5OfMessageAttributes, received[0].MD5OfMessageAttributes)
+	assert.Equal(t, "blue", received[0].MessageAttributes["Color"].StringValue)
+}
+
+func TestSendMessageWithoutAttributes(t *testing.T) {
+	e := newEngine()
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	msg, err := e.SendMessage("q", "plain", -1, nil)
+	require.NoError(t, err)
+	assert.Empty(t, msg.MD5OfMessageAttributes)
+	assert.Nil(t, msg.MessageAttributes)
+}
+
+func TestMD5OfMessageAttributes_Deterministic(t *testing.T) {
+	e := newEngine()
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	attrs := map[string]sqs.MessageAttribute{
+		"B": {DataType: "String", StringValue: "second"},
+		"A": {DataType: "String", StringValue: "first"},
+	}
+
+	msg1, err := e.SendMessage("q", "body1", -1, attrs)
+	require.NoError(t, err)
+	msg2, err := e.SendMessage("q", "body2", -1, attrs)
+	require.NoError(t, err)
+
+	// Same attributes → same MD5 regardless of map iteration order.
+	assert.Equal(t, msg1.MD5OfMessageAttributes, msg2.MD5OfMessageAttributes)
+}
+
+func TestSendMessageBatchWithAttributes(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	entries := []sqs.SendMessageBatchEntry{
+		{
+			ID:   "with-attrs",
+			Body: "body1",
+			MessageAttributes: map[string]sqs.MessageAttribute{
+				"Tag": {DataType: "String", StringValue: "important"},
+			},
+			DelaySeconds: -1,
+		},
+		{
+			ID:           "no-attrs",
+			Body:         "body2",
+			DelaySeconds: -1,
+		},
+	}
+
+	result, err := e.SendMessageBatch("q", entries)
+	require.NoError(t, err)
+	require.Len(t, result.Successful, 2)
+
+	// Verify MD5 presence.
+	var withAttrs, noAttrs *sqs.BatchResultEntry
+	for i := range result.Successful {
+		if result.Successful[i].ID == "with-attrs" {
+			withAttrs = &result.Successful[i]
+		} else {
+			noAttrs = &result.Successful[i]
+		}
+	}
+	assert.NotEmpty(t, withAttrs.MD5OfMessageAttributes)
+	assert.Empty(t, noAttrs.MD5OfMessageAttributes)
+
+	// Receive and verify.
+	msgs, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+
+	hasAttrs := 0
+	for _, m := range msgs {
+		if len(m.MessageAttributes) > 0 {
+			hasAttrs++
+			assert.Equal(t, "important", m.MessageAttributes["Tag"].StringValue)
+		}
+	}
+	assert.Equal(t, 1, hasAttrs)
+}
+
+func TestMessageAttributes_SurviveDLQ(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	_, err := e.CreateQueue("dlq")
+	require.NoError(t, err)
+
+	_, err = e.CreateQueue("source")
+	require.NoError(t, err)
+
+	err = e.SetQueueAttributes("source", map[string]string{
+		"RedrivePolicy": `{"deadLetterTargetArn":"arn:aws:sqs:eu-central-1:000000000000:dlq","maxReceiveCount":1}`,
+	})
+	require.NoError(t, err)
+
+	attrs := map[string]sqs.MessageAttribute{
+		"EventType": {DataType: "String", StringValue: "order.placed"},
+	}
+	_, err = e.SendMessage("source", "poison", -1, attrs)
+	require.NoError(t, err)
+
+	// First receive — message moves to inflight, receive count becomes 1.
+	msgs, err := e.ReceiveMessage(ctx, "source", 1, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+
+	// Second receive — count exceeds maxReceiveCount, should move to DLQ.
+	msgs, err = e.ReceiveMessage(ctx, "source", 1, 0, 0)
+	require.NoError(t, err)
+	assert.Empty(t, msgs)
+
+	// Check DLQ — message should be there with attributes preserved.
+	dlqMsgs, err := e.ReceiveMessage(ctx, "dlq", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, dlqMsgs, 1)
+	assert.Equal(t, "poison", dlqMsgs[0].Body)
+	require.Contains(t, dlqMsgs[0].MessageAttributes, "EventType")
+	assert.Equal(t, "order.placed", dlqMsgs[0].MessageAttributes["EventType"].StringValue)
 }

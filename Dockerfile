@@ -1,14 +1,9 @@
-FROM golang:1.25-alpine AS build
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -o /mokapot ./cmd/mokapot
+FROM busybox:1.36.1-musl AS prep
+RUN mkdir -p /data
 
-FROM alpine:3.21
-RUN adduser -D -H appuser
-COPY --from=build /mokapot /mokapot
-RUN mkdir -p /data && chown appuser /data
-USER appuser
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=prep --chown=nonroot:nonroot /data /data
+ARG TARGETPLATFORM
+COPY --chown=nonroot:nonroot $TARGETPLATFORM/mokapot /usr/bin/mokapot
 EXPOSE 4566
-ENTRYPOINT ["/mokapot"]
+ENTRYPOINT ["/usr/bin/mokapot"]

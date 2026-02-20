@@ -17,7 +17,7 @@ import (
 func newTestServer() http.Handler {
 	sqsEngine := sqs.NewEngine("us-east-1", "000000000000", "localhost:4566")
 	enqueue := func(queueName, body string) error {
-		_, err := sqsEngine.SendMessage(queueName, body, 0)
+		_, err := sqsEngine.SendMessage(queueName, body, 0, nil)
 		return err
 	}
 	snsEngine := sns.NewEngine("us-east-1", "000000000000", enqueue)

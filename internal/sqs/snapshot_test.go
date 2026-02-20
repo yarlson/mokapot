@@ -36,7 +36,7 @@ func TestSnapshotAndRestoreQueues(t *testing.T) {
 	require.NoError(t, err)
 
 	// Send a message to queue-a.
-	_, err = e.SendMessage("queue-a", "hello", -1)
+	_, err = e.SendMessage("queue-a", "hello", -1, nil)
 	require.NoError(t, err)
 
 	data, err := e.Snapshot()
@@ -93,7 +93,7 @@ func TestSnapshotAndRestoreInflightMessages(t *testing.T) {
 	_, err := e.CreateQueue("inflight-queue")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("inflight-queue", "msg1", -1)
+	_, err = e.SendMessage("inflight-queue", "msg1", -1, nil)
 	require.NoError(t, err)
 
 	// Receive to make it inflight.
@@ -124,7 +124,7 @@ func TestSnapshotAndRestoreExpiredInflightMessages(t *testing.T) {
 	_, err := e.CreateQueue("expire-queue")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("expire-queue", "will-expire", -1)
+	_, err = e.SendMessage("expire-queue", "will-expire", -1, nil)
 	require.NoError(t, err)
 
 	// Receive with short visibility timeout (10s).
@@ -158,7 +158,7 @@ func TestSnapshotAndRestoreDelayedMessages(t *testing.T) {
 	require.NoError(t, err)
 
 	// Send with 60-second delay.
-	_, err = e.SendMessage("delay-queue", "delayed-msg", 60)
+	_, err = e.SendMessage("delay-queue", "delayed-msg", 60, nil)
 	require.NoError(t, err)
 
 	data, err := e.Snapshot()
@@ -197,7 +197,7 @@ func TestSnapshotAndRestoreRedrivePolicy(t *testing.T) {
 		"RedrivePolicy": `{"deadLetterTargetArn":"arn:aws:sqs:eu-central-1:000000000000:dlq","maxReceiveCount":2}`,
 	}))
 
-	_, err = e.SendMessage("src-queue", "dlq-msg", -1)
+	_, err = e.SendMessage("src-queue", "dlq-msg", -1, nil)
 	require.NoError(t, err)
 
 	data, err := e.Snapshot()
@@ -228,7 +228,7 @@ func TestSnapshotAndRestoreReceiveCount(t *testing.T) {
 	_, err := e.CreateQueue("rc-queue")
 	require.NoError(t, err)
 
-	_, err = e.SendMessage("rc-queue", "counted-msg", -1)
+	_, err = e.SendMessage("rc-queue", "counted-msg", -1, nil)
 	require.NoError(t, err)
 
 	// Receive to increment ReceiveCount to 1, then let it expire.
@@ -263,7 +263,7 @@ func TestSnapshotAndRestoreMultipleMessages(t *testing.T) {
 	require.NoError(t, err)
 
 	for i := range 5 {
-		_, err = e.SendMessage("multi-queue", fmt.Sprintf("msg-%d", i), -1)
+		_, err = e.SendMessage("multi-queue", fmt.Sprintf("msg-%d", i), -1, nil)
 		require.NoError(t, err)
 	}
 

@@ -305,16 +305,22 @@ func (h *Handler) sendMessageJSON(w http.ResponseWriter, raw map[string]json.Raw
 		delaySeconds = v
 	}
 
-	msg, err := h.engine.SendMessage(queueName, body, delaySeconds)
+	attrs := parseSQSMessageAttributesJSON(raw)
+
+	msg, err := h.engine.SendMessage(queueName, body, delaySeconds, attrs)
 	if err != nil {
 		writeJSONQueueError(w, err)
 		return
 	}
 
-	writeJSON(w, map[string]string{
+	resp := map[string]string{
 		"MessageId":        msg.MessageID,
 		"MD5OfMessageBody": msg.MD5OfBody,
-	})
+	}
+	if msg.MD5OfMessageAttributes != "" {
+		resp["MD5OfMessageAttributes"] = msg.MD5OfMessageAttributes
+	}
+	writeJSON(w, resp)
 }
 
 func (h *Handler) receiveMessageJSON(w http.ResponseWriter, r *http.Request, raw map[string]json.RawMessage, pathQueueName string) {
@@ -378,27 +384,46 @@ func (h *Handler) receiveMessageJSON(w http.ResponseWriter, r *http.Request, raw
 		return
 	}
 
+	// Parse requested message attribute names for filtering.
+	msgAttrNames := jsonStringSlice(raw, "MessageAttributeNames")
+
+	type jsonMsgAttrValue struct {
+		DataType    string `json:"DataType"`
+		StringValue string `json:"StringValue,omitempty"`
+		BinaryValue []byte `json:"BinaryValue,omitempty"`
+	}
+
 	type jsonMessage struct {
-		MessageId     string            `json:"MessageId"`
-		ReceiptHandle string            `json:"ReceiptHandle"`
-		MD5OfBody     string            `json:"MD5OfBody"`
-		Body          string            `json:"Body"`
-		Attributes    map[string]string `json:"Attributes,omitempty"`
+		MessageId              string                      `json:"MessageId"`
+		ReceiptHandle          string                      `json:"ReceiptHandle"`
+		MD5OfBody              string                      `json:"MD5OfBody"`
+		Body                   string                      `json:"Body"`
+		MD5OfMessageAttributes string                      `json:"MD5OfMessageAttributes,omitempty"`
+		Attributes             map[string]string           `json:"Attributes,omitempty"`
+		MessageAttributes      map[string]jsonMsgAttrValue `json:"MessageAttributes,omitempty"`
 	}
 
 	var messages []jsonMessage
 	for _, msg := range msgs {
-		messages = append(messages, jsonMessage{
-			MessageId:     msg.MessageID,
-			ReceiptHandle: msg.ReceiptHandle,
-			MD5OfBody:     msg.MD5OfBody,
-			Body:          msg.Body,
+		jm := jsonMessage{
+			MessageId:              msg.MessageID,
+			ReceiptHandle:          msg.ReceiptHandle,
+			MD5OfBody:              msg.MD5OfBody,
+			Body:                   msg.Body,
+			MD5OfMessageAttributes: msg.MD5OfMessageAttributes,
 			Attributes: map[string]string{
 				"SentTimestamp":                    strconv.FormatInt(msg.SentTimestamp, 10),
 				"ApproximateReceiveCount":          strconv.Itoa(msg.ReceiveCount),
 				"ApproximateFirstReceiveTimestamp": strconv.FormatInt(msg.FirstReceivedAt, 10),
 			},
-		})
+		}
+		if filtered := filterMessageAttributes(msg.MessageAttributes, msgAttrNames); len(filtered) > 0 {
+			jm.MessageAttributes = make(map[string]jsonMsgAttrValue, len(filtered))
+			for k, v := range filtered {
+				jm.MessageAttributes[k] = jsonMsgAttrValue(v)
+			}
+		}
+		messages = append(messages, jm)
 	}
 
 	writeJSON(w, map[string]any{"Messages": messages})
@@ -628,8 +653,9 @@ type sendMessageXMLResponse struct {
 }
 
 type sendMessageXMLResult struct {
-	MessageID string `xml:"MessageId"`
-	MD5OfBody string `xml:"MD5OfMessageBody"`
+	MessageID              string `xml:"MessageId"`
+	MD5OfBody              string `xml:"MD5OfMessageBody"`
+	MD5OfMessageAttributes string `xml:"MD5OfMessageAttributes,omitempty"`
 }
 
 func (h *Handler) sendMessageXML(w http.ResponseWriter, params query.Params, queueName string) {
@@ -654,7 +680,9 @@ func (h *Handler) sendMessageXML(w http.ResponseWriter, params query.Params, que
 		delaySeconds = v
 	}
 
-	msg, err := h.engine.SendMessage(queueName, body, delaySeconds)
+	msgAttrs := parseSQSMessageAttributesQuery(params)
+
+	msg, err := h.engine.SendMessage(queueName, body, delaySeconds, msgAttrs)
 	if err != nil {
 		writeQueueErrorXML(w, err)
 		return
@@ -662,8 +690,9 @@ func (h *Handler) sendMessageXML(w http.ResponseWriter, params query.Params, que
 
 	query.WriteXML(w, http.StatusOK, sendMessageXMLResponse{
 		Result: sendMessageXMLResult{
-			MessageID: msg.MessageID,
-			MD5OfBody: msg.MD5OfBody,
+			MessageID:              msg.MessageID,
+			MD5OfBody:              msg.MD5OfBody,
+			MD5OfMessageAttributes: msg.MD5OfMessageAttributes,
 		},
 		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
 	})
@@ -680,16 +709,29 @@ type receiveMessageXMLResult struct {
 }
 
 type receiveMessageXMLEntry struct {
-	MessageID     string                `xml:"MessageId"`
-	ReceiptHandle string                `xml:"ReceiptHandle"`
-	MD5OfBody     string                `xml:"MD5OfBody"`
-	Body          string                `xml:"Body"`
-	Attributes    []xmlMessageAttribute `xml:"Attribute,omitempty"`
+	MessageID              string                    `xml:"MessageId"`
+	ReceiptHandle          string                    `xml:"ReceiptHandle"`
+	MD5OfBody              string                    `xml:"MD5OfBody"`
+	Body                   string                    `xml:"Body"`
+	MD5OfMessageAttributes string                    `xml:"MD5OfMessageAttributes,omitempty"`
+	Attributes             []xmlMessageAttribute     `xml:"Attribute,omitempty"`
+	MessageAttributes      []xmlUserMessageAttribute `xml:"MessageAttribute,omitempty"`
 }
 
 type xmlMessageAttribute struct {
 	Name  string `xml:"Name"`
 	Value string `xml:"Value"`
+}
+
+type xmlUserMessageAttribute struct {
+	Name  string                       `xml:"Name"`
+	Value xmlUserMessageAttributeValue `xml:"Value"`
+}
+
+type xmlUserMessageAttributeValue struct {
+	DataType    string `xml:"DataType"`
+	StringValue string `xml:"StringValue,omitempty"`
+	BinaryValue []byte `xml:"BinaryValue,omitempty"`
 }
 
 func (h *Handler) receiveMessageXML(w http.ResponseWriter, r *http.Request, params query.Params, queueName string) {
@@ -755,19 +797,40 @@ func (h *Handler) receiveMessageXML(w http.ResponseWriter, r *http.Request, para
 		return
 	}
 
+	// Parse requested message attribute names for filtering.
+	var msgAttrNames []string
+	for i := 1; ; i++ {
+		n := params.Get(fmt.Sprintf("MessageAttributeName.%d", i))
+		if n == "" {
+			break
+		}
+		msgAttrNames = append(msgAttrNames, n)
+	}
+
 	var entries []receiveMessageXMLEntry
 	for _, msg := range msgs {
-		entries = append(entries, receiveMessageXMLEntry{
-			MessageID:     msg.MessageID,
-			ReceiptHandle: msg.ReceiptHandle,
-			MD5OfBody:     msg.MD5OfBody,
-			Body:          msg.Body,
+		entry := receiveMessageXMLEntry{
+			MessageID:              msg.MessageID,
+			ReceiptHandle:          msg.ReceiptHandle,
+			MD5OfBody:              msg.MD5OfBody,
+			Body:                   msg.Body,
+			MD5OfMessageAttributes: msg.MD5OfMessageAttributes,
 			Attributes: []xmlMessageAttribute{
 				{Name: "SentTimestamp", Value: strconv.FormatInt(msg.SentTimestamp, 10)},
 				{Name: "ApproximateReceiveCount", Value: strconv.Itoa(msg.ReceiveCount)},
 				{Name: "ApproximateFirstReceiveTimestamp", Value: strconv.FormatInt(msg.FirstReceivedAt, 10)},
 			},
-		})
+		}
+		if filtered := filterMessageAttributes(msg.MessageAttributes, msgAttrNames); len(filtered) > 0 {
+			for _, name := range sortedKeys(filtered) {
+				v := filtered[name]
+				entry.MessageAttributes = append(entry.MessageAttributes, xmlUserMessageAttribute{
+					Name:  name,
+					Value: xmlUserMessageAttributeValue(v),
+				})
+			}
+		}
+		entries = append(entries, entry)
 	}
 
 	query.WriteXML(w, http.StatusOK, receiveMessageXMLResponse{
@@ -837,10 +900,16 @@ func (h *Handler) sendMessageBatchJSON(w http.ResponseWriter, raw map[string]jso
 		return
 	}
 
+	type jsonBatchMsgAttr struct {
+		DataType    string `json:"DataType"`
+		StringValue string `json:"StringValue,omitempty"`
+		BinaryValue []byte `json:"BinaryValue,omitempty"`
+	}
 	type jsonBatchEntry struct {
-		Id           string `json:"Id"`
-		MessageBody  string `json:"MessageBody"`
-		DelaySeconds *int   `json:"DelaySeconds,omitempty"`
+		Id                string                      `json:"Id"`
+		MessageBody       string                      `json:"MessageBody"`
+		DelaySeconds      *int                        `json:"DelaySeconds,omitempty"`
+		MessageAttributes map[string]jsonBatchMsgAttr `json:"MessageAttributes,omitempty"`
 	}
 
 	var entries []jsonBatchEntry
@@ -857,10 +926,18 @@ func (h *Handler) sendMessageBatchJSON(w http.ResponseWriter, raw map[string]jso
 		if e.DelaySeconds != nil {
 			ds = *e.DelaySeconds
 		}
+		var attrs map[string]MessageAttribute
+		if len(e.MessageAttributes) > 0 {
+			attrs = make(map[string]MessageAttribute, len(e.MessageAttributes))
+			for k, v := range e.MessageAttributes {
+				attrs[k] = MessageAttribute(v)
+			}
+		}
 		batchEntries[i] = SendMessageBatchEntry{
-			ID:           e.Id,
-			Body:         e.MessageBody,
-			DelaySeconds: ds,
+			ID:                e.Id,
+			Body:              e.MessageBody,
+			DelaySeconds:      ds,
+			MessageAttributes: attrs,
 		}
 	}
 
@@ -871,9 +948,10 @@ func (h *Handler) sendMessageBatchJSON(w http.ResponseWriter, raw map[string]jso
 	}
 
 	type successEntry struct {
-		Id               string `json:"Id"`
-		MessageId        string `json:"MessageId"`
-		MD5OfMessageBody string `json:"MD5OfMessageBody"`
+		Id                     string `json:"Id"`
+		MessageId              string `json:"MessageId"`
+		MD5OfMessageBody       string `json:"MD5OfMessageBody"`
+		MD5OfMessageAttributes string `json:"MD5OfMessageAttributes,omitempty"`
 	}
 	type failEntry struct {
 		Id          string `json:"Id"`
@@ -885,9 +963,10 @@ func (h *Handler) sendMessageBatchJSON(w http.ResponseWriter, raw map[string]jso
 	successful := make([]successEntry, 0, len(result.Successful))
 	for _, s := range result.Successful {
 		successful = append(successful, successEntry{
-			Id:               s.ID,
-			MessageId:        s.MessageID,
-			MD5OfMessageBody: s.MD5OfBody,
+			Id:                     s.ID,
+			MessageId:              s.MessageID,
+			MD5OfMessageBody:       s.MD5OfBody,
+			MD5OfMessageAttributes: s.MD5OfMessageAttributes,
 		})
 	}
 	failed := make([]failEntry, 0, len(result.Failed))
@@ -918,9 +997,10 @@ type sendMessageBatchXMLResult struct {
 }
 
 type sendMessageBatchXMLSuccess struct {
-	ID        string `xml:"Id"`
-	MessageID string `xml:"MessageId"`
-	MD5OfBody string `xml:"MD5OfMessageBody"`
+	ID                     string `xml:"Id"`
+	MessageID              string `xml:"MessageId"`
+	MD5OfBody              string `xml:"MD5OfMessageBody"`
+	MD5OfMessageAttributes string `xml:"MD5OfMessageAttributes,omitempty"`
 }
 
 type batchXMLError struct {
@@ -952,10 +1032,12 @@ func (h *Handler) sendMessageBatchXML(w http.ResponseWriter, params query.Params
 			}
 			ds = v
 		}
+		attrs := parseSQSMessageAttributesQueryIndexed(params, fmt.Sprintf("SendMessageBatchRequestEntry.%d", i))
 		entries = append(entries, SendMessageBatchEntry{
-			ID:           id,
-			Body:         body,
-			DelaySeconds: ds,
+			ID:                id,
+			Body:              body,
+			DelaySeconds:      ds,
+			MessageAttributes: attrs,
 		})
 	}
 
@@ -1439,4 +1521,106 @@ func (h *Handler) deleteQueueXML(w http.ResponseWriter, params query.Params, que
 	query.WriteXML(w, http.StatusOK, deleteQueueXMLResponse{
 		Metadata: query.ResponseMetadata{RequestID: query.NewRequestID()},
 	})
+}
+
+// --- Message attribute parsing helpers ---
+
+// parseSQSMessageAttributesJSON extracts MessageAttributes from a JSON request body.
+// The AWS JSON protocol sends: {"MessageAttributes": {"Name": {"DataType":"String","StringValue":"val"}}}.
+func parseSQSMessageAttributesJSON(raw map[string]json.RawMessage) map[string]MessageAttribute {
+	v, ok := raw["MessageAttributes"]
+	if !ok {
+		return nil
+	}
+	var rawAttrs map[string]struct {
+		DataType    string `json:"DataType"`
+		StringValue string `json:"StringValue"`
+		BinaryValue []byte `json:"BinaryValue"`
+	}
+	if err := json.Unmarshal(v, &rawAttrs); err != nil {
+		slog.Warn("failed to parse SQS MessageAttributes", "err", err)
+		return nil
+	}
+	if len(rawAttrs) == 0 {
+		return nil
+	}
+	attrs := make(map[string]MessageAttribute, len(rawAttrs))
+	for k, a := range rawAttrs {
+		attrs[k] = MessageAttribute{DataType: a.DataType, StringValue: a.StringValue, BinaryValue: a.BinaryValue}
+	}
+	return attrs
+}
+
+// parseSQSMessageAttributesQuery extracts MessageAttribute.N.* from Query protocol params.
+func parseSQSMessageAttributesQuery(params query.Params) map[string]MessageAttribute {
+	return parseSQSMessageAttributesQueryIndexed(params, "")
+}
+
+// parseSQSMessageAttributesQueryIndexed extracts message attributes from Query params
+// with an optional prefix (e.g., "SendMessageBatchRequestEntry.1").
+func parseSQSMessageAttributesQueryIndexed(params query.Params, prefix string) map[string]MessageAttribute {
+	base := "MessageAttribute"
+	if prefix != "" {
+		base = prefix + ".MessageAttribute"
+	}
+	var attrs map[string]MessageAttribute
+	for i := 1; ; i++ {
+		name := params.Get(fmt.Sprintf("%s.%d.Name", base, i))
+		if name == "" {
+			break
+		}
+		dataType := params.Get(fmt.Sprintf("%s.%d.Value.DataType", base, i))
+		if dataType == "" {
+			continue
+		}
+		if attrs == nil {
+			attrs = make(map[string]MessageAttribute)
+		}
+		attrs[name] = MessageAttribute{
+			DataType:    dataType,
+			StringValue: params.Get(fmt.Sprintf("%s.%d.Value.StringValue", base, i)),
+		}
+	}
+	return attrs
+}
+
+// filterMessageAttributes returns the subset of attributes matching the requested names.
+// If names is empty or contains "All", all attributes are returned.
+func filterMessageAttributes(attrs map[string]MessageAttribute, names []string) map[string]MessageAttribute {
+	if len(attrs) == 0 {
+		return nil
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	all := false
+	for _, n := range names {
+		if n == "All" || n == ".*" {
+			all = true
+			break
+		}
+	}
+	if all {
+		return attrs
+	}
+	result := make(map[string]MessageAttribute)
+	for _, n := range names {
+		if v, ok := attrs[n]; ok {
+			result[n] = v
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// sortedKeys returns the keys of a map in sorted order.
+func sortedKeys(m map[string]MessageAttribute) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

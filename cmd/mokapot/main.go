@@ -45,7 +45,7 @@ func run() error {
 	sqsHandler := sqs.NewHandler(sqsEngine)
 
 	enqueue := func(queueName, body string) error {
-		_, err := sqsEngine.SendMessage(queueName, body, 0)
+		_, err := sqsEngine.SendMessage(queueName, body, 0, nil)
 		return err
 	}
 	snsEngine := sns.NewEngine(region, accountID, enqueue)

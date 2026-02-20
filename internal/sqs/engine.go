@@ -37,14 +37,23 @@ func parseRedrivePolicy(s string) (*redrivePolicy, error) {
 	return &rp, nil
 }
 
+// MessageAttribute represents a typed SQS message attribute.
+type MessageAttribute struct {
+	DataType    string // "String", "Number", "Binary", "String.custom", etc.
+	StringValue string
+	BinaryValue []byte
+}
+
 // Message represents an SQS message in the engine.
 type Message struct {
-	MessageID       string
-	Body            string
-	MD5OfBody       string
-	SentTimestamp   int64
-	ReceiveCount    int
-	FirstReceivedAt int64
+	MessageID              string
+	Body                   string
+	MD5OfBody              string
+	MD5OfMessageAttributes string
+	MessageAttributes      map[string]MessageAttribute
+	SentTimestamp          int64
+	ReceiveCount           int
+	FirstReceivedAt        int64
 
 	ReceiptHandle  string
 	InvisibleUntil time.Time
@@ -346,11 +355,12 @@ func (e *Engine) SetQueueAttributes(queueName string, attrs map[string]string) e
 
 // SendMessage adds a message to a queue.
 // delaySeconds overrides the queue-level DelaySeconds. Pass -1 to use the queue default.
+// attrs may be nil if no message attributes are provided.
 //
 // Note: the engine read-lock is released before acquiring the queue lock.
 // If DeleteQueue is added, it must ensure in-flight operations on the queue
 // complete before removing it from the map (e.g. use queue.mu as a barrier).
-func (e *Engine) SendMessage(queueName, body string, delaySeconds int) (*Message, error) {
+func (e *Engine) SendMessage(queueName, body string, delaySeconds int, attrs map[string]MessageAttribute) (*Message, error) {
 	e.mu.RLock()
 	q, exists := e.queues[queueName]
 	nowFn := e.now
@@ -377,10 +387,14 @@ func (e *Engine) SendMessage(queueName, body string, delaySeconds int) (*Message
 	}
 
 	msg := &Message{
-		MessageID:     uuid.New().String(),
-		Body:          body,
-		MD5OfBody:     md5Hash(body),
-		SentTimestamp: now.UnixMilli(),
+		MessageID:         uuid.New().String(),
+		Body:              body,
+		MD5OfBody:         md5Hash(body),
+		MessageAttributes: attrs,
+		SentTimestamp:     now.UnixMilli(),
+	}
+	if len(attrs) > 0 {
+		msg.MD5OfMessageAttributes = md5OfMessageAttributes(attrs)
 	}
 
 	if delaySeconds > 0 {
@@ -800,9 +814,10 @@ func (e *Engine) DeleteMessage(queueName, receiptHandle string) error {
 
 // BatchResultEntry represents a successful entry in a batch response.
 type BatchResultEntry struct {
-	ID        string // caller-supplied entry ID
-	MessageID string
-	MD5OfBody string
+	ID                     string // caller-supplied entry ID
+	MessageID              string
+	MD5OfBody              string
+	MD5OfMessageAttributes string
 }
 
 // BatchError represents a failed entry in a batch response.
@@ -815,9 +830,10 @@ type BatchError struct {
 
 // SendMessageBatchEntry is a single entry in a SendMessageBatch request.
 type SendMessageBatchEntry struct {
-	ID           string
-	Body         string
-	DelaySeconds int // -1 means use queue default
+	ID                string
+	Body              string
+	DelaySeconds      int // -1 means use queue default
+	MessageAttributes map[string]MessageAttribute
 }
 
 // SendMessageBatchResult holds the results of a SendMessageBatch call.
@@ -867,7 +883,7 @@ func (e *Engine) SendMessageBatch(queueName string, entries []SendMessageBatchEn
 			continue
 		}
 
-		msg, err := e.SendMessage(queueName, entry.Body, entry.DelaySeconds)
+		msg, err := e.SendMessage(queueName, entry.Body, entry.DelaySeconds, entry.MessageAttributes)
 		if err != nil {
 			result.Failed = append(result.Failed, BatchError{
 				ID:          entry.ID,
@@ -879,9 +895,10 @@ func (e *Engine) SendMessageBatch(queueName string, entries []SendMessageBatchEn
 		}
 
 		result.Successful = append(result.Successful, BatchResultEntry{
-			ID:        entry.ID,
-			MessageID: msg.MessageID,
-			MD5OfBody: msg.MD5OfBody,
+			ID:                     entry.ID,
+			MessageID:              msg.MessageID,
+			MD5OfBody:              msg.MD5OfBody,
+			MD5OfMessageAttributes: msg.MD5OfMessageAttributes,
 		})
 	}
 

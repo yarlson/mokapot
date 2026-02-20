@@ -16,16 +16,24 @@ type queueSnapshot struct {
 	Messages     []messageSnapshot `json:"messages"`
 }
 
+type messageAttributeSnapshot struct {
+	DataType    string `json:"data_type"`
+	StringValue string `json:"string_value,omitempty"`
+	BinaryValue []byte `json:"binary_value,omitempty"`
+}
+
 type messageSnapshot struct {
-	MessageID       string    `json:"message_id"`
-	Body            string    `json:"body"`
-	MD5OfBody       string    `json:"md5_of_body"`
-	SentTimestamp   int64     `json:"sent_timestamp"`
-	ReceiveCount    int       `json:"receive_count"`
-	FirstReceivedAt int64     `json:"first_received_at"`
-	ReceiptHandle   string    `json:"receipt_handle"`
-	InvisibleUntil  time.Time `json:"invisible_until"`
-	AvailableAt     time.Time `json:"available_at"`
+	MessageID              string                              `json:"message_id"`
+	Body                   string                              `json:"body"`
+	MD5OfBody              string                              `json:"md5_of_body"`
+	MD5OfMessageAttributes string                              `json:"md5_of_message_attributes,omitempty"`
+	MessageAttributes      map[string]messageAttributeSnapshot `json:"message_attributes,omitempty"`
+	SentTimestamp          int64                               `json:"sent_timestamp"`
+	ReceiveCount           int                                 `json:"receive_count"`
+	FirstReceivedAt        int64                               `json:"first_received_at"`
+	ReceiptHandle          string                              `json:"receipt_handle"`
+	InvisibleUntil         time.Time                           `json:"invisible_until"`
+	AvailableAt            time.Time                           `json:"available_at"`
 }
 
 // Snapshot serializes the entire SQS engine state to JSON.
@@ -70,17 +78,25 @@ func snapshotQueue(q *Queue) queueSnapshot {
 }
 
 func snapshotMessage(msg *Message) messageSnapshot {
-	return messageSnapshot{
-		MessageID:       msg.MessageID,
-		Body:            msg.Body,
-		MD5OfBody:       msg.MD5OfBody,
-		SentTimestamp:   msg.SentTimestamp,
-		ReceiveCount:    msg.ReceiveCount,
-		FirstReceivedAt: msg.FirstReceivedAt,
-		ReceiptHandle:   msg.ReceiptHandle,
-		InvisibleUntil:  msg.InvisibleUntil,
-		AvailableAt:     msg.AvailableAt,
+	ms := messageSnapshot{
+		MessageID:              msg.MessageID,
+		Body:                   msg.Body,
+		MD5OfBody:              msg.MD5OfBody,
+		MD5OfMessageAttributes: msg.MD5OfMessageAttributes,
+		SentTimestamp:          msg.SentTimestamp,
+		ReceiveCount:           msg.ReceiveCount,
+		FirstReceivedAt:        msg.FirstReceivedAt,
+		ReceiptHandle:          msg.ReceiptHandle,
+		InvisibleUntil:         msg.InvisibleUntil,
+		AvailableAt:            msg.AvailableAt,
 	}
+	if len(msg.MessageAttributes) > 0 {
+		ms.MessageAttributes = make(map[string]messageAttributeSnapshot, len(msg.MessageAttributes))
+		for k, v := range msg.MessageAttributes {
+			ms.MessageAttributes[k] = messageAttributeSnapshot(v)
+		}
+	}
+	return ms
 }
 
 // Restore loads engine state from a JSON snapshot.
@@ -116,15 +132,22 @@ func (e *Engine) Restore(data []byte) error {
 
 		for _, ms := range qs.Messages {
 			msg := &Message{
-				MessageID:       ms.MessageID,
-				Body:            ms.Body,
-				MD5OfBody:       ms.MD5OfBody,
-				SentTimestamp:   ms.SentTimestamp,
-				ReceiveCount:    ms.ReceiveCount,
-				FirstReceivedAt: ms.FirstReceivedAt,
-				ReceiptHandle:   ms.ReceiptHandle,
-				InvisibleUntil:  ms.InvisibleUntil,
-				AvailableAt:     ms.AvailableAt,
+				MessageID:              ms.MessageID,
+				Body:                   ms.Body,
+				MD5OfBody:              ms.MD5OfBody,
+				MD5OfMessageAttributes: ms.MD5OfMessageAttributes,
+				SentTimestamp:          ms.SentTimestamp,
+				ReceiveCount:           ms.ReceiveCount,
+				FirstReceivedAt:        ms.FirstReceivedAt,
+				ReceiptHandle:          ms.ReceiptHandle,
+				InvisibleUntil:         ms.InvisibleUntil,
+				AvailableAt:            ms.AvailableAt,
+			}
+			if len(ms.MessageAttributes) > 0 {
+				msg.MessageAttributes = make(map[string]MessageAttribute, len(ms.MessageAttributes))
+				for k, v := range ms.MessageAttributes {
+					msg.MessageAttributes[k] = MessageAttribute(v)
+				}
 			}
 
 			// Classify message: expired inflight → available, active inflight → inflight, else → available.

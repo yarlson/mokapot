@@ -13,14 +13,20 @@ Point any AWS SDK at `localhost:4566` and stop waiting for cloud roundtrips. mok
 go run ./cmd/mokapot
 
 # Docker
-docker build -t mokapot .
-docker run -p 4566:4566 mokapot
+docker run -p 4566:4566 yarlson/mokapot:latest
 
 # Docker Compose
 docker-compose up
 ```
 
 Server listens on `:4566`. Health check at `GET /_health`.
+
+## Install
+
+```bash
+brew tap yarlson/homebrew-tap
+brew install --cask mokapot
+```
 
 ## What works
 
@@ -85,6 +91,15 @@ const client = new SQSClient({
 go test ./...        # 99 tests - unit + integration (real AWS SDK client)
 golangci-lint run    # lint
 ```
+
+### Releases
+
+Tags matching `v*` run GoReleaser v2 via `.github/workflows/release.yml`.
+
+- Homebrew tap publishing target: `yarlson/homebrew-tap`
+- Docker image target: `yarlson/mokapot` (linux/amd64 + linux/arm64)
+- Required GitHub secret for cross-repo tap pushes: `GH_PAT` (repo-scoped PAT)
+- Required Docker Hub secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
 
 ### Project layout
 
