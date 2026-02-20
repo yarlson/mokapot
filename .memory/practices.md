@@ -56,16 +56,20 @@ All via environment variables (optional, with defaults):
 - **Long polling**: waiter struct holds a buffered channel; `SendMessage` calls `notifyWaiters()` (under queue lock) to wake all blocked receivers; polling loop also wakes on nearest inflight expiry (reappearing messages) and nearest delayed message availability
 - No per-message goroutine timers (avoid goroutine explosion)
 - No global scheduler goroutine for long polling — each long-polling `ReceiveMessage` manages its own timer and waiter lifecycle
-- **Lock ordering**: when touching two queues (e.g., source → DLQ), unlock the source queue before acquiring the DLQ lock to prevent deadlock
+- **Lock ordering (DLQ moves)**: DLQ reference resolved outside source queue lock (under engine RLock), then DLQ insertion performed while still holding source queue lock; nesting: source `queue.mu` → `dlq.mu` (no engine lock held during nesting)
+- **Lock ordering (atomic snapshots)**: `saveState` acquires SNS engine lock then SQS engine lock — matches Publish→SendMessage call flow; both snapshots taken under write locks, then both released before persisting to bbolt
 - **SNS subscription attributes**: per-subscription `sync.RWMutex` protects the `Attributes` map and `cachedFilterPolicy`; Publish reads with `RLock`, Set/GetSubscriptionAttributes write/read with `Lock`/`RLock`; `subscriptionsByARN` global index is protected by the engine-level `sync.RWMutex`
 - **FilterPolicy caching**: filter policies are parsed once during `SetSubscriptionAttributes` and stored as `cachedFilterPolicy` on the Subscription struct; Publish reads the cached policy under `RLock` — no JSON parsing on the hot path
-- **DLQ move is lazy**: happens inside `receiveFromQueue`, not via background goroutine
+- **DLQ move is lazy and atomic**: happens inside `receiveFromQueue`; messages moved to DLQ while source queue lock is still held (no window where message exists in neither queue)
 - `ReceiveMessage` accepts `context.Context` — context cancellation terminates long polls gracefully
-- **Snapshot/Restore**: SQS and SNS engines expose `Snapshot()` / `Restore()` methods; snapshots are taken under engine-level locks; the two engine snapshots are not atomic relative to each other (a message published via SNS between them may appear in only one)
+- **Snapshot/Restore**: SQS and SNS engines expose `Snapshot()` / `Restore()` / `Lock()` / `SnapshotLocked()` / `Unlock()` methods; `saveState` uses `Lock`/`SnapshotLocked`/`Unlock` to take both snapshots atomically; `Restore` filters retention-expired messages
+- **Periodic retention cleanup**: background goroutine in `main.go` calls `sqsEngine.CleanupExpiredMessages()` every 5 minutes; removes messages exceeding `MessageRetentionPeriod` from available and inflight pools
+- **TOCTOU prevention**: `SetQueueAttributes` holds engine write lock for DLQ existence check + attribute write, preventing DLQ deletion between validation and set
 
 ## Queue Attributes
 
-- `mutableAttributes` whitelist in `engine.go` controls which attributes can be set via `SetQueueAttributes`
+- `mutableAttributes` whitelist in `sqs/engine.go` controls which attributes can be set via `SetQueueAttributes`
+- `mutableSubscriptionAttributes` whitelist in `sns/engine.go` controls which attributes can be set via `SetSubscriptionAttributes`
 - `numericAttributeRanges` map validates min/max bounds for numeric attributes
 - `RedrivePolicy` is validated structurally (JSON parse, required fields) and referentially (DLQ ARN must exist)
 - `GetQueueAttributes` supports `"All"` to return all attributes or specific names

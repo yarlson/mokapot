@@ -14,7 +14,8 @@ mokapot (cmd/mokapot/main.go)
   │ — configures slog JSON logger
   │ — opens BoltStore if PERSISTENCE=bbolt (restores state on startup)
   │ — starts http.Server with timeouts
-  │ — periodic state save (30s) + final save on shutdown
+  │ — periodic state save (30s, atomic cross-engine) + final save on shutdown
+  │ — periodic retention cleanup (5 min)
   │ — graceful shutdown on SIGINT/SIGTERM
   │
   ▼
@@ -48,7 +49,9 @@ Query Parser (internal/query/query.go)
   │     │ — ChangeMessageVisibility: update visibility timeout of inflight message; 0 releases immediately and wakes long pollers
   │     │ — ChangeMessageVisibilityBatch: batch variant (up to 10) with partial failure
   │     │ — ListQueues with optional prefix filter, DeleteQueue
-  │     │ — Get/SetQueueAttributes: mutable attribute whitelist, numeric range validation, RedrivePolicy DLQ existence check
+  │     │ — Get/SetQueueAttributes: mutable attribute whitelist, numeric range validation, RedrivePolicy DLQ existence check (TOCTOU-safe under engine write lock)
+  │     │ — message retention enforcement: expired messages discarded at receive, restore, and periodic cleanup
+  │     │ — queue capacity limit: MaxMessagesPerQueue (100k) with OverLimit error
   │     │ — receipt handle regeneration + ReceiveCount tracking
   │     │ — injectable clock (now func() time.Time)
   │     │ — context-aware ReceiveMessage (cancellable long polls)
@@ -73,7 +76,7 @@ Query Parser (internal/query/query.go)
         │ — CreateTopic (idempotent), Subscribe (sqs only), Publish
         │ — ListTopics, DeleteTopic (cascading subscription cleanup)
         │ — ListSubscriptionsByTopic, Unsubscribe
-        │ — Get/SetSubscriptionAttributes with per-subscription mutex
+        │ — Get/SetSubscriptionAttributes with per-subscription mutex; mutable attribute whitelist validation
         │ — Get/SetTopicAttributes
         │ — RawMessageDelivery: per-subscription toggle; Publish checks attribute and delivers raw body or SNS envelope
         │ — FilterPolicy: parsed and cached on SetSubscriptionAttributes; evaluated during Publish to skip non-matching subscribers
@@ -127,7 +130,7 @@ Query Parser (internal/query/query.go)
 - **Dockerfile**: distroless base (`gcr.io/distroless/static-debian12:nonroot`); expects pre-built binary from GoReleaser at `$TARGETPLATFORM/mokapot`; `/data` directory for persistence; non-root user
 - **docker-compose**: uses published `yarlson/mokapot:latest` image; `PERSISTENCE=bbolt`, `DATA_DIR=/data`, named volume `messaging-data`
 - **GoReleaser v2** (`.goreleaser.yaml`): builds linux/darwin × amd64/arm64; publishes tar.gz archives, Docker images (`yarlson/mokapot`), and Homebrew cask (`yarlson/homebrew-tap`)
-- **GitHub Actions** (`.github/workflows/release.yml`): triggers on `v*` tags; runs GoReleaser; requires secrets `GH_PAT`, `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
+- **GitHub Actions** (`.github/workflows/release.yml`): triggers on `v*` tags; runs GoReleaser; all actions pinned to commit SHAs; requires secrets `GH_PAT`, `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
 
 ## Defaults
 

@@ -53,3 +53,11 @@
 **GoReleaser** — release automation tool (v2); configured in `.goreleaser.yaml`; builds cross-platform binaries, Docker images, and Homebrew casks from Git tags
 
 **Distroless** — minimal container base image (`gcr.io/distroless/static-debian12:nonroot`); contains no shell or package manager; used for production Docker images
+
+**MessageRetentionPeriod** — SQS queue attribute (seconds) controlling how long messages are retained; default 345600 (4 days); expired messages are discarded at receive time, restore time, and by periodic cleanup
+
+**MaxMessagesPerQueue** — hard cap (100,000) on total messages (available + inflight) per queue; exceeding it returns `OverLimit` error
+
+**OverLimit** — SQS error returned when a queue reaches `MaxMessagesPerQueue` capacity
+
+**SnapshotLocked** — engine method that serializes state without acquiring its own lock; caller must hold the engine lock; used by `saveState` for atomic cross-engine snapshots

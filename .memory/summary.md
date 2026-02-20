@@ -35,6 +35,8 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 - Delayed messages (DelaySeconds)
 - Dead-letter queue with RedrivePolicy
 - PurgeQueue (60-second cooldown)
+- Message retention enforcement: messages exceeding `MessageRetentionPeriod` are discarded at receive time, restore time, and by periodic background cleanup (every 5 min)
+- Queue capacity limit: `MaxMessagesPerQueue` (100k); `OverLimit` error when exceeded
 
 ### SNS
 
@@ -77,6 +79,10 @@ SQS and SNS are fully operational with complete CRUD, message lifecycle, fanout,
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 - Optional bbolt persistence: `PERSISTENCE=bbolt` + `DATA_DIR` enables state snapshots to `state.db`; periodic save (30s) + graceful-shutdown save; full restore on startup (queues, topics, subscriptions, messages)
+- Atomic cross-engine snapshots: `saveState` holds both SNS and SQS write locks simultaneously via `Lock`/`SnapshotLocked`/`Unlock` to prevent cross-engine inconsistency
+- Periodic retention cleanup goroutine (5-minute interval) removes expired messages from all queues
+
+**License:** MIT
 
 **Not yet implemented:** FIFO queues, SNS delivery protocols beyond `sqs`
 
