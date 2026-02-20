@@ -12,20 +12,87 @@ Point any AWS SDK at `localhost:4566` and stop waiting for cloud roundtrips. mok
 # Go
 go run ./cmd/mokapot
 
-# Docker
-docker run -p 4566:4566 yarlson/mokapot:latest
+# Docker (ephemeral, in-memory state)
+docker run --rm -p 4566:4566 yarlson/mokapot:latest
 
-# Docker Compose
-docker-compose up
+# Docker Compose (persistent bbolt state via named volume)
+docker compose up
 ```
 
 Server listens on `:4566`. Health check at `GET /_health`.
 
 ## Install
 
+### Homebrew (macOS)
+
 ```bash
 brew tap yarlson/homebrew-tap
 brew install --cask mokapot
+```
+
+### GitHub Releases (Linux/macOS)
+
+Download the archive for your OS/arch from:
+<https://github.com/yarlson/mokapot/releases>
+
+```bash
+VERSION=vX.Y.Z
+OS=darwin   # darwin or linux
+ARCH=arm64  # arm64 or amd64
+
+curl -fL -o mokapot.tar.gz \
+  "https://github.com/yarlson/mokapot/releases/download/${VERSION}/mokapot_${VERSION#v}_${OS}_${ARCH}.tar.gz"
+tar -xzf mokapot.tar.gz
+chmod +x mokapot
+sudo mv mokapot /usr/local/bin/mokapot
+```
+
+## Docker usage
+
+### Docker
+
+Run with in-memory state (default):
+
+```bash
+docker run --rm -p 4566:4566 yarlson/mokapot:latest
+```
+
+Run with persisted bbolt state:
+
+```bash
+docker run --rm -p 4566:4566 \
+  -e PERSISTENCE=bbolt \
+  -e DATA_DIR=/data \
+  -v mokapot-data:/data \
+  yarlson/mokapot:latest
+```
+
+### Docker Compose
+
+The bundled `docker-compose.yml` runs `yarlson/mokapot:latest` on port `4566` with:
+
+- `PERSISTENCE=bbolt`
+- `DATA_DIR=/data`
+- `messaging-data` named volume
+
+Start and verify:
+
+```bash
+docker compose up -d
+curl -s http://localhost:4566/_health
+docker compose logs -f messaging
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
+Remove persisted data volume:
+
+```bash
+docker compose down -v
 ```
 
 ## What works
@@ -77,6 +144,8 @@ All env vars are optional unless noted:
 | `PERSISTENCE` | `memory`       | State backend: `memory` or `bbolt`                   |
 | `DATA_DIR`    | _(empty)_      | Required when `PERSISTENCE=bbolt`; stores `state.db` |
 
+`docker-compose.yml` overrides persistence defaults to `PERSISTENCE=bbolt` and `DATA_DIR=/data`.
+
 ## SDK wiring
 
 Point your SDK's endpoint at mokapot. Credentials can be anything:
@@ -118,10 +187,12 @@ golangci-lint run    # lint
 
 ### Releases
 
-Tags matching `v*` run GoReleaser v2 via `.github/workflows/release.yml`.
+GitHub Actions currently has one release pipeline: `.github/workflows/release.yml`.
+It runs on tags matching `v*` and executes GoReleaser v2 (`release --clean`).
 
 - Homebrew tap publishing target: `yarlson/homebrew-tap`
 - Docker image target: `yarlson/mokapot` (linux/amd64 + linux/arm64)
+- GitHub release artifacts: `mokapot_<version>_<os>_<arch>.tar.gz` + `checksums.txt`
 - Required GitHub secret for cross-repo tap pushes: `GH_PAT` (repo-scoped PAT)
 - Required Docker Hub secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
 
