@@ -78,6 +78,7 @@ SQS and SNS are fully operational with complete CRUD, message lifecycle, fanout,
 - ChangeMessageVisibilityBatch: batch variant (up to 10 entries) with partial failure support, duplicate ID detection, per-entry error isolation
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
+- Node.js integration tests (`tests/nodejs/`): AWS SDK v3 exercising SQS (lifecycle, visibility, long polling, delays, batches, DLQ) and SNS (fan-out, raw delivery, filter policies) against a running mokapot instance
 - Optional bbolt persistence: `PERSISTENCE=bbolt` + `DATA_DIR` enables state snapshots to `state.db`; periodic save (30s) + graceful-shutdown save; full restore on startup (queues, topics, subscriptions, messages)
 - Atomic cross-engine snapshots: `saveState` holds both SNS and SQS write locks simultaneously via `Lock`/`SnapshotLocked`/`Unlock` to prevent cross-engine inconsistency
 - Periodic retention cleanup goroutine (5-minute interval) removes expired messages from all queues
@@ -90,7 +91,7 @@ SQS and SNS are fully operational with complete CRUD, message lifecycle, fanout,
 
 - **Language:** Go 1.25
 - **Module:** `github.com/yarlson/mokapot`
-- **Testing:** `testify`, `aws-sdk-go-v2` (integration tests)
+- **Testing:** `testify`, `aws-sdk-go-v2` (Go integration tests), Node.js native test runner + AWS SDK v3 (JS integration tests in `tests/nodejs/`)
 - **Linting:** `golangci-lint`
 - **Logging:** `log/slog` with JSON handler
 - **Container:** Distroless (`gcr.io/distroless/static-debian12:nonroot`); GoReleaser builds binaries externally

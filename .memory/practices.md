@@ -27,7 +27,10 @@
 - Unit tests use `testify` (assert + require)
 - Golden response shape tests for each action (verify XML structure, required fields, error shapes)
 - **Handler-level JSON protocol tests**: `httptest` + direct `handler.HandleRequest` calls with `Content-Type: application/x-amz-json-1.0` and `X-Amz-Target` headers; tests JSON request/response shapes without going through a real HTTP server or AWS SDK; covers all SQS actions (CRUD, batch, visibility, attributes, errors)
-- Node.js and PHP SDK tests for final validation, not primary feedback loop
+- **Node.js integration tests** (`tests/nodejs/`): AWS SDK v3 (`@aws-sdk/client-sqs`, `@aws-sdk/client-sns`) using Node.js native test runner (`node:test`); run with `npm test` from `tests/nodejs/`; requires a running mokapot instance at `http://localhost:4566`
+  - SQS coverage: full message lifecycle, visibility timeout reappearance, long polling, delayed messages, batch send/delete with partial failure, dead-letter queue
+  - SNS coverage: publish fan-out to SQS (envelope validation), raw vs envelope delivery, filter policy attribute matching
+- Node.js and PHP SDK tests serve as final validation, not primary feedback loop
 - **Deterministic time in tests**: use `Engine.SetClock` to inject a controllable clock; advance time by mutating the closure — never use `time.Sleep` in tests
 
 ## Project Structure
@@ -41,6 +44,7 @@ internal/sns/      — SNS handler (protocol dispatch) + engine (in-memory topic
 internal/store/    — BoltStore: bbolt-backed persistence (SaveSQSState/LoadSQSState, SaveSNSState/LoadSNSState)
 internal/runtime/  — schedulers, waiter management (planned)
 internal/types/    — shared structs, canonical encodings (planned)
+tests/nodejs/      — Node.js integration tests (AWS SDK v3) for SQS and SNS
 ```
 
 ## Configuration
