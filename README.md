@@ -99,6 +99,16 @@ const client = new SQSClient({
 });
 ```
 
+```php
+// PHP
+$client = new Aws\Sqs\SqsClient([
+    'region' => 'eu-central-1',
+    'endpoint' => 'http://localhost:4566',
+    'credentials' => ['key' => 'test', 'secret' => 'test'],
+    'version' => 'latest',
+]);
+```
+
 ## Development
 
 ```bash

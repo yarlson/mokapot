@@ -1,0 +1,15 @@
+{
+    "name": "mokapot/php-integration-tests",
+    "description": "PHP SDK integration tests for mokapot",
+    "type": "project",
+    "require-dev": {
+        "aws/aws-sdk-php": "^3",
+        "phpunit/phpunit": "^11"
+    },
+    "autoload": {
+        "psr-4": {}
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
