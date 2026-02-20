@@ -405,7 +405,7 @@ func (h *Handler) receiveMessageJSON(w http.ResponseWriter, r *http.Request, raw
 		MessageAttributes      map[string]jsonMsgAttrValue `json:"MessageAttributes,omitempty"`
 	}
 
-	var messages []jsonMessage
+	messages := make([]jsonMessage, 0, len(msgs))
 	for _, msg := range msgs {
 		jm := jsonMessage{
 			MessageId:              msg.MessageID,

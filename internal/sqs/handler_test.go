@@ -1,6 +1,7 @@
 package sqs_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -663,4 +664,589 @@ func TestXML_ReceiveMessage_WithAttributes_Shape(t *testing.T) {
 	assert.Contains(t, body, "<Name>Color</Name>")
 	assert.Contains(t, body, "<DataType>String</DataType>")
 	assert.Contains(t, body, "<StringValue>red</StringValue>")
+}
+
+// --- JSON protocol tests ---
+
+func postJSON(handler *sqs.Handler, target, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	req.Header.Set("X-Amz-Target", target)
+	rec := httptest.NewRecorder()
+	handler.HandleRequest(rec, req, "")
+	return rec
+}
+
+func postJSONQueue(handler *sqs.Handler, target, queueName, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/000000000000/"+queueName, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	req.Header.Set("X-Amz-Target", target)
+	rec := httptest.NewRecorder()
+	handler.HandleRequest(rec, req, queueName)
+	return rec
+}
+
+// mustCreateQueueJSON creates a queue via the JSON protocol and fails the test if it doesn't succeed.
+func mustCreateQueueJSON(t *testing.T, handler *sqs.Handler, body string) {
+	t.Helper()
+	rec := postJSON(handler, "AmazonSQS.CreateQueue", body)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// mustSendMessageJSON sends a message via the JSON protocol and fails the test if it doesn't succeed.
+func mustSendMessageJSON(t *testing.T, handler *sqs.Handler, queueName, body string) {
+	t.Helper()
+	rec := postJSONQueue(handler, "AmazonSQS.SendMessage", queueName, body)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// jsonBody safely marshals a map to a JSON string for use as a request body,
+// avoiding string concatenation that could produce malformed JSON.
+func jsonBody(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func TestJSON_CreateQueue(t *testing.T) {
+	h := newTestHandler()
+	rec := postJSON(h, "AmazonSQS.CreateQueue", `{"QueueName":"json-queue"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "application/x-amz-json-1.0", rec.Header().Get("Content-Type"))
+
+	body := rec.Body.String()
+	assert.Contains(t, body, "QueueUrl")
+	assert.Contains(t, body, "json-queue")
+}
+
+func TestJSON_CreateQueue_MissingName(t *testing.T) {
+	h := newTestHandler()
+	rec := postJSON(h, "AmazonSQS.CreateQueue", `{}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "__type")
+	assert.Contains(t, body, "InvalidParameterValue")
+}
+
+func TestJSON_GetQueueUrl(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-url-queue"}`)
+
+	rec := postJSON(h, "AmazonSQS.GetQueueUrl", `{"QueueName":"json-url-queue"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "QueueUrl")
+	assert.Contains(t, body, "json-url-queue")
+}
+
+func TestJSON_GetQueueUrl_NotFound(t *testing.T) {
+	h := newTestHandler()
+	rec := postJSON(h, "AmazonSQS.GetQueueUrl", `{"QueueName":"nonexistent"}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "NonExistentQueue")
+}
+
+func TestJSON_SendMessage(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-send-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.SendMessage", "json-send-queue",
+		`{"QueueUrl":"http://localhost:4566/000000000000/json-send-queue","MessageBody":"hello json"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "MessageId")
+	assert.Contains(t, body, "MD5OfMessageBody")
+}
+
+func TestJSON_SendMessage_WithAttributes(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-send-attr-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.SendMessage", "json-send-attr-queue",
+		`{"MessageBody":"test","MessageAttributes":{"Color":{"DataType":"String","StringValue":"blue"}}}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "MessageId")
+	assert.Contains(t, body, "MD5OfMessageBody")
+	assert.Contains(t, body, "MD5OfMessageAttributes")
+}
+
+func TestJSON_ReceiveMessage(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-recv-queue"}`)
+	mustSendMessageJSON(t, h, "json-recv-queue",
+		`{"MessageBody":"json msg"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.ReceiveMessage", "json-recv-queue",
+		`{"MaxNumberOfMessages":1}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Messages")
+	assert.Contains(t, body, "MessageId")
+	assert.Contains(t, body, "ReceiptHandle")
+	assert.Contains(t, body, "MD5OfBody")
+	assert.Contains(t, body, "Body")
+	assert.Contains(t, body, "json msg")
+	assert.Contains(t, body, "ApproximateReceiveCount")
+	assert.Contains(t, body, "SentTimestamp")
+}
+
+func TestJSON_ReceiveMessage_Empty(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-recv-empty-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.ReceiveMessage", "json-recv-empty-queue", `{}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Messages")
+}
+
+func TestJSON_ReceiveMessage_WithAttributes(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-recv-attr-queue"}`)
+	mustSendMessageJSON(t, h, "json-recv-attr-queue",
+		`{"MessageBody":"test","MessageAttributes":{"Color":{"DataType":"String","StringValue":"red"}}}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.ReceiveMessage", "json-recv-attr-queue",
+		`{"MaxNumberOfMessages":1,"MessageAttributeNames":["All"]}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "MessageAttributes")
+	assert.Contains(t, body, "Color")
+	assert.Contains(t, body, "String")
+	assert.Contains(t, body, "red")
+}
+
+func TestJSON_DeleteMessage(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-del-msg-queue"}`)
+	mustSendMessageJSON(t, h, "json-del-msg-queue",
+		`{"MessageBody":"to delete"}`)
+
+	recvRec := postJSONQueue(h, "AmazonSQS.ReceiveMessage", "json-del-msg-queue",
+		`{"MaxNumberOfMessages":1}`)
+	require.Equal(t, http.StatusOK, recvRec.Code)
+
+	var recvResp struct {
+		Messages []struct {
+			ReceiptHandle string `json:"ReceiptHandle"`
+		} `json:"Messages"`
+	}
+	err := json.Unmarshal(recvRec.Body.Bytes(), &recvResp)
+	require.NoError(t, err)
+	require.Len(t, recvResp.Messages, 1)
+
+	rec := postJSONQueue(h, "AmazonSQS.DeleteMessage", "json-del-msg-queue",
+		jsonBody(t, map[string]string{"ReceiptHandle": recvResp.Messages[0].ReceiptHandle}))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestJSON_DeleteMessage_InvalidHandle(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-del-bad-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.DeleteMessage", "json-del-bad-queue",
+		`{"ReceiptHandle":"bogus-handle"}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "ReceiptHandleIsInvalid")
+}
+
+func TestJSON_SendMessageBatch(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-batch-send-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.SendMessageBatch", "json-batch-send-queue",
+		`{"Entries":[{"Id":"m1","MessageBody":"hello one"},{"Id":"m2","MessageBody":"hello two"}]}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Successful")
+	assert.Contains(t, body, "m1")
+	assert.Contains(t, body, "m2")
+	assert.Contains(t, body, "MessageId")
+	assert.Contains(t, body, "MD5OfMessageBody")
+}
+
+func TestJSON_SendMessageBatch_Empty(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-batch-send-empty-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.SendMessageBatch", "json-batch-send-empty-queue",
+		`{"Entries":[]}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "EmptyBatchRequest")
+}
+
+func TestJSON_DeleteMessageBatch(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-batch-del-queue"}`)
+	mustSendMessageJSON(t, h, "json-batch-del-queue", `{"MessageBody":"msg1"}`)
+	mustSendMessageJSON(t, h, "json-batch-del-queue", `{"MessageBody":"msg2"}`)
+
+	recvRec := postJSONQueue(h, "AmazonSQS.ReceiveMessage", "json-batch-del-queue",
+		`{"MaxNumberOfMessages":2}`)
+	require.Equal(t, http.StatusOK, recvRec.Code)
+
+	var recvResp struct {
+		Messages []struct {
+			ReceiptHandle string `json:"ReceiptHandle"`
+		} `json:"Messages"`
+	}
+	err := json.Unmarshal(recvRec.Body.Bytes(), &recvResp)
+	require.NoError(t, err)
+	require.Len(t, recvResp.Messages, 2)
+
+	rec := postJSONQueue(h, "AmazonSQS.DeleteMessageBatch", "json-batch-del-queue",
+		jsonBody(t, map[string]any{"Entries": []map[string]string{
+			{"Id": "d1", "ReceiptHandle": recvResp.Messages[0].ReceiptHandle},
+			{"Id": "d2", "ReceiptHandle": recvResp.Messages[1].ReceiptHandle},
+		}}))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Successful")
+	assert.Contains(t, body, "d1")
+	assert.Contains(t, body, "d2")
+}
+
+func TestJSON_DeleteMessageBatch_PartialFailure(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-batch-del-partial-queue"}`)
+	mustSendMessageJSON(t, h, "json-batch-del-partial-queue", `{"MessageBody":"msg1"}`)
+
+	recvRec := postJSONQueue(h, "AmazonSQS.ReceiveMessage", "json-batch-del-partial-queue",
+		`{"MaxNumberOfMessages":1}`)
+	require.Equal(t, http.StatusOK, recvRec.Code)
+
+	var recvResp struct {
+		Messages []struct {
+			ReceiptHandle string `json:"ReceiptHandle"`
+		} `json:"Messages"`
+	}
+	err := json.Unmarshal(recvRec.Body.Bytes(), &recvResp)
+	require.NoError(t, err)
+	require.Len(t, recvResp.Messages, 1)
+
+	rec := postJSONQueue(h, "AmazonSQS.DeleteMessageBatch", "json-batch-del-partial-queue",
+		jsonBody(t, map[string]any{"Entries": []map[string]string{
+			{"Id": "good", "ReceiptHandle": recvResp.Messages[0].ReceiptHandle},
+			{"Id": "bad", "ReceiptHandle": "bogus-handle"},
+		}}))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Successful")
+	assert.Contains(t, body, `"Id":"good"`)
+	assert.Contains(t, body, "Failed")
+	assert.Contains(t, body, `"Id":"bad"`)
+	assert.Contains(t, body, "ReceiptHandleIsInvalid")
+}
+
+func TestJSON_PurgeQueue(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-purge-queue"}`)
+	mustSendMessageJSON(t, h, "json-purge-queue", `{"MessageBody":"to purge"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.PurgeQueue", "json-purge-queue", `{}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestJSON_PurgeQueue_NonExistent(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postJSONQueue(h, "AmazonSQS.PurgeQueue", "nonexistent", `{}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "NonExistentQueue")
+}
+
+func TestJSON_ChangeMessageVisibility(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-cmv-queue"}`)
+	mustSendMessageJSON(t, h, "json-cmv-queue", `{"MessageBody":"cmv body"}`)
+
+	recvRec := postJSONQueue(h, "AmazonSQS.ReceiveMessage", "json-cmv-queue",
+		`{"MaxNumberOfMessages":1}`)
+	require.Equal(t, http.StatusOK, recvRec.Code)
+
+	var recvResp struct {
+		Messages []struct {
+			ReceiptHandle string `json:"ReceiptHandle"`
+		} `json:"Messages"`
+	}
+	err := json.Unmarshal(recvRec.Body.Bytes(), &recvResp)
+	require.NoError(t, err)
+	require.Len(t, recvResp.Messages, 1)
+
+	rec := postJSONQueue(h, "AmazonSQS.ChangeMessageVisibility", "json-cmv-queue",
+		jsonBody(t, map[string]any{"ReceiptHandle": recvResp.Messages[0].ReceiptHandle, "VisibilityTimeout": 60}))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestJSON_ChangeMessageVisibility_InvalidHandle(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-cmv-err-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.ChangeMessageVisibility", "json-cmv-err-queue",
+		`{"ReceiptHandle":"bogus","VisibilityTimeout":30}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "ReceiptHandleIsInvalid")
+}
+
+func TestJSON_ChangeMessageVisibilityBatch(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-cmvb-queue"}`)
+	mustSendMessageJSON(t, h, "json-cmvb-queue", `{"MessageBody":"msg1"}`)
+	mustSendMessageJSON(t, h, "json-cmvb-queue", `{"MessageBody":"msg2"}`)
+
+	recvRec := postJSONQueue(h, "AmazonSQS.ReceiveMessage", "json-cmvb-queue",
+		`{"MaxNumberOfMessages":2}`)
+	require.Equal(t, http.StatusOK, recvRec.Code)
+
+	var recvResp struct {
+		Messages []struct {
+			ReceiptHandle string `json:"ReceiptHandle"`
+		} `json:"Messages"`
+	}
+	err := json.Unmarshal(recvRec.Body.Bytes(), &recvResp)
+	require.NoError(t, err)
+	require.Len(t, recvResp.Messages, 2)
+
+	rec := postJSONQueue(h, "AmazonSQS.ChangeMessageVisibilityBatch", "json-cmvb-queue",
+		jsonBody(t, map[string]any{"Entries": []map[string]any{
+			{"Id": "cv1", "ReceiptHandle": recvResp.Messages[0].ReceiptHandle, "VisibilityTimeout": 60},
+			{"Id": "cv2", "ReceiptHandle": recvResp.Messages[1].ReceiptHandle, "VisibilityTimeout": 120},
+		}}))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Successful")
+	assert.Contains(t, body, "cv1")
+	assert.Contains(t, body, "cv2")
+}
+
+func TestJSON_ChangeMessageVisibilityBatch_PartialFailure(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-cmvb-partial-queue"}`)
+	mustSendMessageJSON(t, h, "json-cmvb-partial-queue", `{"MessageBody":"msg1"}`)
+
+	recvRec := postJSONQueue(h, "AmazonSQS.ReceiveMessage", "json-cmvb-partial-queue",
+		`{"MaxNumberOfMessages":1}`)
+	require.Equal(t, http.StatusOK, recvRec.Code)
+
+	var recvResp struct {
+		Messages []struct {
+			ReceiptHandle string `json:"ReceiptHandle"`
+		} `json:"Messages"`
+	}
+	err := json.Unmarshal(recvRec.Body.Bytes(), &recvResp)
+	require.NoError(t, err)
+	require.Len(t, recvResp.Messages, 1)
+
+	rec := postJSONQueue(h, "AmazonSQS.ChangeMessageVisibilityBatch", "json-cmvb-partial-queue",
+		jsonBody(t, map[string]any{"Entries": []map[string]any{
+			{"Id": "good", "ReceiptHandle": recvResp.Messages[0].ReceiptHandle, "VisibilityTimeout": 60},
+			{"Id": "bad", "ReceiptHandle": "bogus", "VisibilityTimeout": 60},
+		}}))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Successful")
+	assert.Contains(t, body, `"Id":"good"`)
+	assert.Contains(t, body, "Failed")
+	assert.Contains(t, body, `"Id":"bad"`)
+	assert.Contains(t, body, "ReceiptHandleIsInvalid")
+}
+
+func TestJSON_GetQueueAttributes(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-gqa-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.GetQueueAttributes", "json-gqa-queue",
+		`{"AttributeNames":["All"]}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "Attributes")
+	assert.Contains(t, body, "VisibilityTimeout")
+}
+
+func TestJSON_GetQueueAttributes_Specific(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-gqa-spec-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.GetQueueAttributes", "json-gqa-spec-queue",
+		`{"AttributeNames":["VisibilityTimeout"]}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Attributes map[string]string `json:"Attributes"`
+	}
+	err := json.Unmarshal(rec.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	assert.Equal(t, "30", resp.Attributes["VisibilityTimeout"])
+}
+
+func TestJSON_SetQueueAttributes(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-sqa-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.SetQueueAttributes", "json-sqa-queue",
+		`{"Attributes":{"VisibilityTimeout":"60"}}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify the attribute was set.
+	getRec := postJSONQueue(h, "AmazonSQS.GetQueueAttributes", "json-sqa-queue",
+		`{"AttributeNames":["VisibilityTimeout"]}`)
+	require.Equal(t, http.StatusOK, getRec.Code)
+
+	var resp struct {
+		Attributes map[string]string `json:"Attributes"`
+	}
+	err := json.Unmarshal(getRec.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	assert.Equal(t, "60", resp.Attributes["VisibilityTimeout"])
+}
+
+func TestJSON_SetQueueAttributes_MissingAttrs(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-sqa-err-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.SetQueueAttributes", "json-sqa-err-queue", `{}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "MissingParameter")
+}
+
+func TestJSON_ListQueues(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-list-a"}`)
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-list-b"}`)
+
+	rec := postJSON(h, "AmazonSQS.ListQueues", `{}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "QueueUrls")
+	assert.Contains(t, body, "json-list-a")
+	assert.Contains(t, body, "json-list-b")
+}
+
+func TestJSON_ListQueues_WithPrefix(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-pfx-match"}`)
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-pfx-other"}`)
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-no-match"}`)
+
+	rec := postJSON(h, "AmazonSQS.ListQueues", `{"QueueNamePrefix":"json-pfx-"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "json-pfx-match")
+	assert.Contains(t, body, "json-pfx-other")
+	assert.NotContains(t, body, "json-no-match")
+}
+
+func TestJSON_DeleteQueue(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-del-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.DeleteQueue", "json-del-queue", `{}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify the queue is gone.
+	getRec := postJSON(h, "AmazonSQS.GetQueueUrl", `{"QueueName":"json-del-queue"}`)
+	assert.Equal(t, http.StatusBadRequest, getRec.Code)
+	assert.Contains(t, getRec.Body.String(), "NonExistentQueue")
+}
+
+func TestJSON_DeleteQueue_NonExistent(t *testing.T) {
+	h := newTestHandler()
+
+	rec := postJSONQueue(h, "AmazonSQS.DeleteQueue", "nonexistent-q", `{}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "NonExistentQueue")
+}
+
+func TestJSON_Error_InvalidAction(t *testing.T) {
+	h := newTestHandler()
+	rec := postJSON(h, "AmazonSQS.BogusAction", `{}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "InvalidAction")
+	assert.Contains(t, body, "__type")
+}
+
+func TestJSON_Error_HeaderFormat(t *testing.T) {
+	h := newTestHandler()
+	rec := postJSON(h, "AmazonSQS.GetQueueUrl", `{"QueueName":"nonexistent"}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "application/x-amz-json-1.0", rec.Header().Get("Content-Type"))
+	assert.Contains(t, rec.Header().Get("x-amzn-query-error"), "Sender")
+}
+
+func TestJSON_SendMessage_WithDelaySeconds(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-delay-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.SendMessage", "json-delay-queue",
+		`{"MessageBody":"delayed body","DelaySeconds":10}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "MessageId")
+	assert.Contains(t, body, "MD5OfMessageBody")
+}
+
+func TestJSON_SendMessage_InvalidDelaySeconds(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-bad-delay-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.SendMessage", "json-bad-delay-queue",
+		`{"MessageBody":"body","DelaySeconds":1000}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "InvalidParameterValue")
+}
+
+func TestJSON_ChangeMessageVisibility_MissingParams(t *testing.T) {
+	h := newTestHandler()
+	mustCreateQueueJSON(t, h, `{"QueueName":"json-cmv-missing-queue"}`)
+
+	rec := postJSONQueue(h, "AmazonSQS.ChangeMessageVisibility", "json-cmv-missing-queue",
+		`{"ReceiptHandle":"some-handle"}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "MissingParameter")
 }
