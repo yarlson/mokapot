@@ -149,6 +149,8 @@ func writeJSONQueueError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "AWS.SimpleQueueService.BatchEntryIdsNotDistinct", sanitizeErrorMessage(err))
 	case errors.Is(err, ErrPurgeQueueInProgress):
 		writeJSONError(w, http.StatusForbidden, "AWS.SimpleQueueService.PurgeQueueInProgress", "Only one PurgeQueue operation is allowed every 60 seconds.")
+	case errors.Is(err, ErrOverLimit):
+		writeJSONError(w, http.StatusForbidden, "OverLimit", sanitizeErrorMessage(err))
 	case errors.Is(err, ErrInvalidParameterValue):
 		writeJSONError(w, http.StatusBadRequest, "InvalidParameterValue", sanitizeErrorMessage(err))
 	default:
@@ -881,6 +883,8 @@ func writeQueueErrorXML(w http.ResponseWriter, err error) {
 		query.WriteError(w, http.StatusBadRequest, "AWS.SimpleQueueService.BatchEntryIdsNotDistinct", sanitizeErrorMessage(err))
 	case errors.Is(err, ErrPurgeQueueInProgress):
 		query.WriteError(w, http.StatusForbidden, "AWS.SimpleQueueService.PurgeQueueInProgress", "Only one PurgeQueue operation is allowed every 60 seconds.")
+	case errors.Is(err, ErrOverLimit):
+		query.WriteError(w, http.StatusForbidden, "OverLimit", sanitizeErrorMessage(err))
 	case errors.Is(err, ErrInvalidParameterValue):
 		query.WriteError(w, http.StatusBadRequest, "InvalidParameterValue", sanitizeErrorMessage(err))
 	default:

@@ -1688,6 +1688,242 @@ func TestSendMessageBatchWithAttributes(t *testing.T) {
 	assert.Equal(t, 1, hasAttrs)
 }
 
+// --- Message retention cleanup tests ---
+
+func TestRetentionCleanup_ExpiredMessageNotReceivable(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "will-expire", -1, nil)
+	require.NoError(t, err)
+
+	// Advance clock past the default retention period (345600 seconds = 4 days)
+	now = now.Add(345601 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Message should not be receivable (expired)
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+}
+
+func TestRetentionCleanup_NonExpiredMessageStillReceivable(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "still-valid", -1, nil)
+	require.NoError(t, err)
+
+	// Advance clock to just before retention period
+	now = now.Add(345599 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "still-valid", received[0].Body)
+}
+
+func TestRetentionCleanup_CustomRetentionPeriod(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	err = e.SetQueueAttributes("q", map[string]string{"MessageRetentionPeriod": "60"})
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "short-lived", -1, nil)
+	require.NoError(t, err)
+
+	// Advance past custom retention period
+	now = now.Add(61 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received)
+}
+
+func TestRetentionCleanup_InflightExpiredMessageRemoved(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	err = e.SetQueueAttributes("q", map[string]string{"MessageRetentionPeriod": "120"})
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "msg", -1, nil)
+	require.NoError(t, err)
+
+	// Receive with long visibility timeout
+	received, err := e.ReceiveMessage(ctx, "q", 1, 300, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+
+	// Advance past retention period (but within visibility timeout)
+	now = now.Add(121 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Message should not reappear — retention trumps visibility
+	received2, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, received2)
+}
+
+func TestRetentionCleanup_MixedExpiredAndValid(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	err = e.SetQueueAttributes("q", map[string]string{"MessageRetentionPeriod": "60"})
+	require.NoError(t, err)
+
+	// Send a message that will expire
+	_, err = e.SendMessage("q", "old-msg", -1, nil)
+	require.NoError(t, err)
+
+	// Advance 30 seconds
+	now = now.Add(30 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Send a message that will still be valid
+	_, err = e.SendMessage("q", "new-msg", -1, nil)
+	require.NoError(t, err)
+
+	// Advance to 61 seconds after the first message (but only 31 seconds after second)
+	now = now.Add(31 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Only the newer message should be receivable
+	received, err := e.ReceiveMessage(ctx, "q", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "new-msg", received[0].Body)
+}
+
+func TestCleanupExpiredMessages_RemovesFromAllQueues(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q1")
+	require.NoError(t, err)
+	err = e.SetQueueAttributes("q1", map[string]string{"MessageRetentionPeriod": "60"})
+	require.NoError(t, err)
+
+	_, err = e.CreateQueue("q2")
+	require.NoError(t, err)
+	err = e.SetQueueAttributes("q2", map[string]string{"MessageRetentionPeriod": "60"})
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q1", "q1-msg", -1, nil)
+	require.NoError(t, err)
+	_, err = e.SendMessage("q2", "q2-msg", -1, nil)
+	require.NoError(t, err)
+
+	// Advance past retention
+	now = now.Add(61 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Run periodic cleanup
+	removed := e.CleanupExpiredMessages()
+	assert.Equal(t, 2, removed)
+
+	// Both queues should be empty
+	r1, err := e.ReceiveMessage(ctx, "q1", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, r1)
+
+	r2, err := e.ReceiveMessage(ctx, "q2", 1, 30, 0)
+	require.NoError(t, err)
+	assert.Empty(t, r2)
+}
+
+func TestCleanupExpiredMessages_RemovesInflight(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+	err = e.SetQueueAttributes("q", map[string]string{"MessageRetentionPeriod": "60"})
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "msg", -1, nil)
+	require.NoError(t, err)
+
+	// Receive to make it inflight with long visibility
+	received, err := e.ReceiveMessage(ctx, "q", 1, 3600, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+
+	// Advance past retention
+	now = now.Add(61 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	// Periodic cleanup should remove the inflight message
+	removed := e.CleanupExpiredMessages()
+	assert.Equal(t, 1, removed)
+}
+
+func TestCleanupExpiredMessages_PreservesValidMessages(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine()
+
+	now := time.Now()
+	e.SetClock(func() time.Time { return now })
+
+	_, err := e.CreateQueue("q")
+	require.NoError(t, err)
+
+	_, err = e.SendMessage("q", "valid-msg", -1, nil)
+	require.NoError(t, err)
+
+	// Don't advance past retention
+	now = now.Add(100 * time.Second)
+	e.SetClock(func() time.Time { return now })
+
+	removed := e.CleanupExpiredMessages()
+	assert.Equal(t, 0, removed)
+
+	// Message should still be receivable
+	received, err := e.ReceiveMessage(ctx, "q", 1, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, received, 1)
+	assert.Equal(t, "valid-msg", received[0].Body)
+}
+
 func TestMessageAttributes_SurviveDLQ(t *testing.T) {
 	ctx := context.Background()
 	e := newEngine()

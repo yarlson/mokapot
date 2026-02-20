@@ -17,7 +17,12 @@ var (
 	ErrTooManyEntriesInBatchRequest = errors.New("AWS.SimpleQueueService.TooManyEntriesInBatchRequest")
 	ErrBatchEntryIdsNotDistinct     = errors.New("AWS.SimpleQueueService.BatchEntryIdsNotDistinct")
 	ErrPurgeQueueInProgress         = errors.New("AWS.SimpleQueueService.PurgeQueueInProgress")
+	ErrOverLimit                    = errors.New("OverLimit")
 )
+
+// MaxMessagesPerQueue is the maximum number of messages (available + inflight)
+// a single queue can hold. Prevents unbounded memory growth under load testing.
+const MaxMessagesPerQueue = 100_000
 
 func md5Hash(s string) string {
 	h := md5.Sum([]byte(s)) //nolint:gosec // required by SQS protocol

@@ -114,6 +114,13 @@ func NewEngine(region, accountID, host string) *Engine {
 	}
 }
 
+// Lock acquires the engine write lock.
+// Use with SnapshotLocked for coordinated cross-engine snapshots.
+func (e *Engine) Lock() { e.mu.Lock() }
+
+// Unlock releases the engine write lock.
+func (e *Engine) Unlock() { e.mu.Unlock() }
+
 // SetClock overrides the time source used by the engine.
 // This is intended for tests that need deterministic time control.
 func (e *Engine) SetClock(fn func() time.Time) {
@@ -304,23 +311,16 @@ var numericAttributeRanges = map[string][2]int{
 }
 
 // SetQueueAttributes sets attributes on a queue.
+// Uses a write lock to make DLQ validation and attribute set atomic,
+// preventing the DLQ from being deleted between validation and set.
 func (e *Engine) SetQueueAttributes(queueName string, attrs map[string]string) error {
-	e.mu.RLock()
-	q, exists := e.queues[queueName]
-	e.mu.RUnlock()
-
-	if !exists {
-		return ErrQueueDoesNotExist
-	}
-
-	// Validate all attribute keys are mutable.
+	// Validate attribute keys and numeric ranges before acquiring locks.
 	for k := range attrs {
 		if !mutableAttributes[k] {
 			return fmt.Errorf("%w: %s is not a settable attribute", ErrInvalidParameterValue, k)
 		}
 	}
 
-	// Validate numeric attributes.
 	for attr, bounds := range numericAttributeRanges {
 		if v, ok := attrs[attr]; ok {
 			n, err := strconv.Atoi(v)
@@ -330,17 +330,29 @@ func (e *Engine) SetQueueAttributes(queueName string, attrs map[string]string) e
 		}
 	}
 
-	// Validate RedrivePolicy if present.
+	// Parse RedrivePolicy early to fail fast on invalid JSON.
+	var rp *redrivePolicy
 	if rpJSON, ok := attrs["RedrivePolicy"]; ok {
-		rp, err := parseRedrivePolicy(rpJSON)
+		var err error
+		rp, err = parseRedrivePolicy(rpJSON)
 		if err != nil {
 			return fmt.Errorf("%w: RedrivePolicy: %w", ErrInvalidParameterValue, err)
 		}
-		// Verify the DLQ target exists
-		e.mu.RLock()
+	}
+
+	// Hold engine lock for the DLQ existence check + attribute set to prevent
+	// the DLQ from being deleted between validation and set (TOCTOU).
+	e.mu.Lock()
+	q, exists := e.queues[queueName]
+	if !exists {
+		e.mu.Unlock()
+		return ErrQueueDoesNotExist
+	}
+
+	if rp != nil {
 		dlq := e.queueByARN(rp.DeadLetterTargetARN)
-		e.mu.RUnlock()
 		if dlq == nil {
+			e.mu.Unlock()
 			return fmt.Errorf("%w: deadLetterTargetArn %s does not exist", ErrInvalidParameterValue, rp.DeadLetterTargetARN)
 		}
 	}
@@ -350,6 +362,7 @@ func (e *Engine) SetQueueAttributes(queueName string, attrs map[string]string) e
 		q.Attributes[k] = v
 	}
 	q.mu.Unlock()
+	e.mu.Unlock()
 	return nil
 }
 
@@ -402,6 +415,10 @@ func (e *Engine) SendMessage(queueName, body string, delaySeconds int, attrs map
 	}
 
 	q.mu.Lock()
+	if len(q.available)+len(q.inflight) >= MaxMessagesPerQueue {
+		q.mu.Unlock()
+		return nil, fmt.Errorf("%w: queue %s has reached maximum capacity (%d messages)", ErrOverLimit, queueName, MaxMessagesPerQueue)
+	}
 	q.available = append(q.available, msg)
 	q.notifyWaiters()
 	q.mu.Unlock()
@@ -543,26 +560,117 @@ func (e *Engine) ReceiveMessage(ctx context.Context, queueName string, maxMessag
 	}
 }
 
-// receiveFromQueue attempts to dequeue messages from a queue without blocking.
-// If a RedrivePolicy is configured and a message exceeds maxReceiveCount,
-// it is moved to the dead-letter queue instead of being returned.
-func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, nowFn func() time.Time) []*Message {
-	now := nowFn()
+// isMessageExpired checks whether a message has exceeded its queue's retention period.
+func isMessageExpired(msg *Message, retentionSeconds int, now time.Time) bool {
+	sentAt := time.UnixMilli(msg.SentTimestamp)
+	return now.After(sentAt.Add(time.Duration(retentionSeconds) * time.Second))
+}
 
+// retentionSeconds returns the MessageRetentionPeriod for a queue in seconds.
+// Must be called with q.mu held.
+func (q *Queue) retentionSeconds() int {
+	if s := q.Attributes["MessageRetentionPeriod"]; s != "" {
+		if v, err := strconv.Atoi(s); err == nil {
+			return v
+		}
+	}
+	return 345600 // default 4 days
+}
+
+// removeExpiredMessages removes messages exceeding the retention period from
+// both available and inflight pools. Returns the number of messages removed.
+func (q *Queue) removeExpiredMessages(now time.Time) int {
 	q.mu.Lock()
+	defer q.mu.Unlock()
 
-	// Parse RedrivePolicy under the queue lock.
-	var rp *redrivePolicy
-	if rpStr := q.Attributes["RedrivePolicy"]; rpStr != "" {
-		var rpErr error
-		rp, rpErr = parseRedrivePolicy(rpStr)
-		if rpErr != nil {
-			slog.Warn("invalid RedrivePolicy on queue, ignoring", "queue", q.Name, "err", rpErr)
+	retention := q.retentionSeconds()
+	removed := 0
+
+	remaining := make([]*Message, 0, len(q.available))
+	for _, msg := range q.available {
+		if isMessageExpired(msg, retention, now) {
+			removed++
+			continue
+		}
+		remaining = append(remaining, msg)
+	}
+	q.available = remaining
+
+	for handle, msg := range q.inflight {
+		if isMessageExpired(msg, retention, now) {
+			delete(q.inflight, handle)
+			removed++
 		}
 	}
 
-	// Requeue expired inflight messages
+	if removed > 0 {
+		slog.Debug("expired messages removed", "queue", q.Name, "count", removed)
+	}
+
+	return removed
+}
+
+// CleanupExpiredMessages removes messages that have exceeded their queue's
+// MessageRetentionPeriod from all queues. Returns the total number of messages removed.
+// This is intended to be called periodically to prevent memory accumulation.
+func (e *Engine) CleanupExpiredMessages() int {
+	e.mu.RLock()
+	queues := make([]*Queue, 0, len(e.queues))
+	for _, q := range e.queues {
+		queues = append(queues, q)
+	}
+	nowFn := e.now
+	e.mu.RUnlock()
+
+	now := nowFn()
+	total := 0
+	for _, q := range queues {
+		total += q.removeExpiredMessages(now)
+	}
+	return total
+}
+
+// receiveFromQueue attempts to dequeue messages from a queue without blocking.
+// If a RedrivePolicy is configured and a message exceeds maxReceiveCount,
+// it is moved to the dead-letter queue instead of being returned.
+//
+// The DLQ reference is resolved outside the queue lock (under engine RLock),
+// then the DLQ insertion is performed while still holding the source queue lock.
+// This eliminates the window where messages exist in neither queue.
+// Lock nesting: source queue.mu → dlq.mu (no engine lock held during nesting).
+func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, nowFn func() time.Time) []*Message {
+	now := nowFn()
+
+	// Pre-resolve DLQ reference so we can move messages atomically.
+	q.mu.Lock()
+	rpStr := q.Attributes["RedrivePolicy"]
+	q.mu.Unlock()
+
+	var rp *redrivePolicy
+	var dlq *Queue
+	if rpStr != "" {
+		var err error
+		rp, err = parseRedrivePolicy(rpStr)
+		if err != nil {
+			slog.Warn("invalid RedrivePolicy on queue, ignoring", "queue", q.Name, "err", err)
+		} else {
+			e.mu.RLock()
+			dlq = e.queueByARN(rp.DeadLetterTargetARN)
+			e.mu.RUnlock()
+		}
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	retention := q.retentionSeconds()
+
+	// Requeue expired inflight messages; discard retention-expired ones.
 	for handle, msg := range q.inflight {
+		if isMessageExpired(msg, retention, now) {
+			delete(q.inflight, handle)
+			continue
+		}
 		if now.After(msg.InvisibleUntil) {
 			msg.ReceiptHandle = ""
 			q.available = append(q.available, msg)
@@ -575,6 +683,11 @@ func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, 
 	remaining := make([]*Message, 0, len(q.available))
 
 	for _, msg := range q.available {
+		// Discard retention-expired messages.
+		if isMessageExpired(msg, retention, now) {
+			continue
+		}
+
 		// Skip messages that are still delayed
 		if !msg.AvailableAt.IsZero() && now.Before(msg.AvailableAt) {
 			remaining = append(remaining, msg)
@@ -607,43 +720,29 @@ func (e *Engine) receiveFromQueue(q *Queue, maxMessages, visibilityTimeout int, 
 
 	q.available = remaining
 
-	// Unlock source queue before touching the DLQ to avoid lock ordering issues.
+	// Move DLQ messages atomically while still holding the source queue lock.
 	if len(dlqMessages) > 0 {
-		q.mu.Unlock()
-		e.moveToDLQ(rp.DeadLetterTargetARN, dlqMessages)
-	} else {
-		q.mu.Unlock()
+		if dlq != nil {
+			dlq.mu.Lock()
+			for _, msg := range dlqMessages {
+				msg.ReceiptHandle = ""
+				msg.InvisibleUntil = time.Time{}
+				msg.AvailableAt = time.Time{}
+				dlq.available = append(dlq.available, msg)
+				slog.Info("message moved to DLQ", "messageId", msg.MessageID, "dlq", dlq.Name, "receiveCount", msg.ReceiveCount)
+			}
+			dlq.notifyWaiters()
+			dlq.mu.Unlock()
+		} else {
+			ids := make([]string, len(dlqMessages))
+			for i, m := range dlqMessages {
+				ids[i] = m.MessageID
+			}
+			slog.Warn("DLQ not found, dropping messages", "dlqArn", rp.DeadLetterTargetARN, "count", len(dlqMessages), "messageIds", ids)
+		}
 	}
 
 	return result
-}
-
-// moveToDLQ enqueues messages into the dead-letter queue identified by ARN.
-func (e *Engine) moveToDLQ(dlqARN string, messages []*Message) {
-	e.mu.RLock()
-	dlq := e.queueByARN(dlqARN)
-	e.mu.RUnlock()
-
-	if dlq == nil {
-		ids := make([]string, len(messages))
-		for i, m := range messages {
-			ids[i] = m.MessageID
-		}
-		slog.Warn("DLQ not found, dropping messages", "dlqArn", dlqARN, "count", len(messages), "messageIds", ids)
-		return
-	}
-
-	dlq.mu.Lock()
-	for _, msg := range messages {
-		// Reset inflight state; preserve body, attributes, and receive count.
-		msg.ReceiptHandle = ""
-		msg.InvisibleUntil = time.Time{}
-		msg.AvailableAt = time.Time{}
-		dlq.available = append(dlq.available, msg)
-		slog.Info("message moved to DLQ", "messageId", msg.MessageID, "dlq", dlq.Name, "receiveCount", msg.ReceiveCount)
-	}
-	dlq.notifyWaiters()
-	dlq.mu.Unlock()
 }
 
 // PurgeQueue removes all messages (available and inflight) from the named queue.

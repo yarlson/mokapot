@@ -255,6 +255,44 @@ func TestSnapshotAndRestoreReceiveCount(t *testing.T) {
 	assert.Equal(t, 2, msgs2[0].ReceiveCount)
 }
 
+func TestSnapshotAndRestoreFiltersExpiredRetention(t *testing.T) {
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	e := newEngine()
+	e.SetClock(func() time.Time { return now })
+	ctx := context.Background()
+
+	_, err := e.CreateQueue("ret-queue")
+	require.NoError(t, err)
+	require.NoError(t, e.SetQueueAttributes("ret-queue", map[string]string{
+		"MessageRetentionPeriod": "60",
+	}))
+
+	// Send two messages.
+	_, err = e.SendMessage("ret-queue", "old-msg", -1, nil)
+	require.NoError(t, err)
+
+	// Advance 30 seconds, then send another.
+	now = now.Add(30 * time.Second)
+	e.SetClock(func() time.Time { return now })
+	_, err = e.SendMessage("ret-queue", "new-msg", -1, nil)
+	require.NoError(t, err)
+
+	data, err := e.Snapshot()
+	require.NoError(t, err)
+
+	// Restore 61 seconds after the first message was sent (31 seconds after the second).
+	restoreTime := time.Date(2025, 1, 1, 0, 1, 1, 0, time.UTC) // 61s after initial
+	e2 := newEngine()
+	e2.SetClock(func() time.Time { return restoreTime })
+	require.NoError(t, e2.Restore(data))
+
+	// Only the newer message should survive restore.
+	msgs, err := e2.ReceiveMessage(ctx, "ret-queue", 10, 30, 0)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "new-msg", msgs[0].Body)
+}
+
 func TestSnapshotAndRestoreMultipleMessages(t *testing.T) {
 	e := newEngine()
 	ctx := context.Background()

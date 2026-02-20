@@ -4,7 +4,7 @@ Local AWS mock. One binary, zero credentials.
 
 Point any AWS SDK at `localhost:4566` and stop waiting for cloud roundtrips. mokapot speaks both AWS protocols (Query/XML and JSON 1.0) so Go, Node, PHP, and Python SDKs work out of the box.
 
-**Currently implemented: SQS.** SNS is next.
+**Currently implemented: SQS + SNS.**
 
 ## Quick start
 
@@ -49,19 +49,33 @@ Plus the hard parts:
 
 ### SNS
 
-Not yet implemented.
+Topic + subscription + publish flow with both protocols:
+
+| Category      | Operations                                                                                                                    |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Topics        | `CreateTopic`, `ListTopics`, `DeleteTopic`, `GetTopicAttributes`, `SetTopicAttributes`                                        |
+| Subscriptions | `Subscribe` (`sqs` only), `Unsubscribe`, `ListSubscriptionsByTopic`, `GetSubscriptionAttributes`, `SetSubscriptionAttributes` |
+| Publishing    | `Publish` with SNS envelope fanout to subscribed SQS queues                                                                   |
+
+Plus the hard parts:
+
+- **Raw message delivery** - per-subscription toggle via `RawMessageDelivery`
+- **Filter policies** - exact match, prefix, exists, anything-but, and numeric operators
+- **Message attributes** - accepted on publish, propagated in envelope, and used for filter matching
 
 ## Configuration
 
-All env vars, all optional:
+All env vars are optional unless noted:
 
-| Variable     | Default        | Purpose                             |
-| ------------ | -------------- | ----------------------------------- |
-| `PORT`       | `4566`         | Server port                         |
-| `REGION`     | `eu-central-1` | Region in ARNs and queue URLs       |
-| `ACCOUNT_ID` | `000000000000` | Account ID in ARNs and queue URLs   |
-| `SQS_HOST`   | `localhost`    | Hostname in queue URLs              |
-| `LOG_LEVEL`  | `info`         | `debug` / `info` / `warn` / `error` |
+| Variable      | Default        | Purpose                                              |
+| ------------- | -------------- | ---------------------------------------------------- |
+| `PORT`        | `4566`         | Server port                                          |
+| `REGION`      | `eu-central-1` | Region in ARNs and queue URLs                        |
+| `ACCOUNT_ID`  | `000000000000` | Account ID in ARNs and queue URLs                    |
+| `SQS_HOST`    | `localhost`    | Hostname in queue URLs                               |
+| `LOG_LEVEL`   | `info`         | `debug` / `info` / `warn` / `error`                  |
+| `PERSISTENCE` | `memory`       | State backend: `memory` or `bbolt`                   |
+| `DATA_DIR`    | _(empty)_      | Required when `PERSISTENCE=bbolt`; stores `state.db` |
 
 ## SDK wiring
 
@@ -88,7 +102,7 @@ const client = new SQSClient({
 ## Development
 
 ```bash
-go test ./...        # 99 tests - unit + integration (real AWS SDK client)
+go test ./...        # unit + integration (real AWS SDK client)
 golangci-lint run    # lint
 ```
 
@@ -107,13 +121,23 @@ Tags matching `v*` run GoReleaser v2 via `.github/workflows/release.yml`.
 cmd/mokapot/        Server entrypoint, config, signal handling
 internal/httpapi/   HTTP routing, protocol detection (JSON vs XML)
 internal/sqs/       Queue engine, message lifecycle, handlers
+internal/sns/       Topic engine, subscriptions, publish handlers
+internal/store/     Optional bbolt persistence (save/restore snapshots)
 internal/query/     AWS Query API (form-encoded) parser
 ```
 
 ### Design notes
 
 - **stdlib only** - no HTTP framework, just `net/http`
-- **In-memory** - no persistence, data gone on restart
+- **In-memory by default** - optional persistence with `PERSISTENCE=bbolt` + `DATA_DIR`
 - **Thread-safe** - engine-level RWMutex + per-queue mutex
 - **Injectable clock** - `Engine.SetClock()` for deterministic time tests, no `time.Sleep` in test suite
 - **Dual protocol from one handler** - Content-Type sniffing routes to JSON or XML codepath
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+Built with ❤️ for developers who value simplicity and speed.

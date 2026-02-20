@@ -26,6 +26,16 @@ func (e *Engine) Snapshot() ([]byte, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	return e.snapshotLocked()
+}
+
+// SnapshotLocked serializes the engine state to JSON.
+// The caller must hold e.mu (read or write).
+func (e *Engine) SnapshotLocked() ([]byte, error) {
+	return e.snapshotLocked()
+}
+
+func (e *Engine) snapshotLocked() ([]byte, error) {
 	topics := make([]topicSnapshot, 0, len(e.topics))
 	for _, t := range e.topics {
 		ts := snapshotTopic(t)

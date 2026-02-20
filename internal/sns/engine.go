@@ -64,6 +64,13 @@ func NewEngine(region, accountID string, enqueue EnqueueFunc) *Engine {
 	}
 }
 
+// Lock acquires the engine write lock.
+// Use with SnapshotLocked for coordinated cross-engine snapshots.
+func (e *Engine) Lock() { e.mu.Lock() }
+
+// Unlock releases the engine write lock.
+func (e *Engine) Unlock() { e.mu.Unlock() }
+
 // SetClock overrides the time source used by the engine.
 func (e *Engine) SetClock(fn func() time.Time) {
 	e.mu.Lock()
@@ -397,6 +404,13 @@ func buildSNSEnvelope(messageID, topicARN, subject, message string, timestamp ti
 	return string(data)
 }
 
+// mutableSubscriptionAttributes defines which subscription attributes can be set.
+var mutableSubscriptionAttributes = map[string]bool{
+	"RawMessageDelivery": true,
+	"FilterPolicy":       true,
+	"FilterPolicyScope":  true,
+}
+
 // SetSubscriptionAttributes sets a single attribute on a subscription.
 func (e *Engine) SetSubscriptionAttributes(subscriptionARN, attrName, attrValue string) error {
 	if subscriptionARN == "" {
@@ -404,6 +418,10 @@ func (e *Engine) SetSubscriptionAttributes(subscriptionARN, attrName, attrValue 
 	}
 	if attrName == "" {
 		return fmt.Errorf("%w: AttributeName is required", ErrInvalidParameter)
+	}
+
+	if !mutableSubscriptionAttributes[attrName] {
+		return fmt.Errorf("%w: Invalid attribute name: %s", ErrInvalidParameter, attrName)
 	}
 
 	e.mu.RLock()

@@ -41,6 +41,16 @@ func (e *Engine) Snapshot() ([]byte, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	return e.snapshotLocked()
+}
+
+// SnapshotLocked serializes the engine state to JSON.
+// The caller must hold e.mu (read or write).
+func (e *Engine) SnapshotLocked() ([]byte, error) {
+	return e.snapshotLocked()
+}
+
+func (e *Engine) snapshotLocked() ([]byte, error) {
 	queues := make([]queueSnapshot, 0, len(e.queues))
 	for _, q := range e.queues {
 		qs := snapshotQueue(q)
@@ -130,6 +140,8 @@ func (e *Engine) Restore(data []byte) error {
 			lastPurgedAt: qs.LastPurgedAt,
 		}
 
+		retention := q.retentionSeconds()
+
 		for _, ms := range qs.Messages {
 			msg := &Message{
 				MessageID:              ms.MessageID,
@@ -148,6 +160,11 @@ func (e *Engine) Restore(data []byte) error {
 				for k, v := range ms.MessageAttributes {
 					msg.MessageAttributes[k] = MessageAttribute(v)
 				}
+			}
+
+			// Discard messages that exceeded the retention period.
+			if isMessageExpired(msg, retention, now) {
+				continue
 			}
 
 			// Classify message: expired inflight → available, active inflight → inflight, else → available.

@@ -90,6 +90,15 @@ func run() error {
 		}()
 	}
 
+	// Periodic retention cleanup goroutine.
+	stopCleanup := make(chan struct{})
+	var cleanupWg sync.WaitGroup
+	cleanupWg.Add(1)
+	go func() {
+		defer cleanupWg.Done()
+		periodicRetentionCleanup(sqsEngine, 5*time.Minute, stopCleanup)
+	}()
+
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("starting mokapot", "port", port, "region", region, "accountId", accountID, "persistence", persistence)
@@ -107,6 +116,9 @@ func run() error {
 	case <-quit:
 		slog.Info("shutting down")
 	}
+
+	close(stopCleanup)
+	cleanupWg.Wait()
 
 	if stopSave != nil {
 		close(stopSave)
@@ -155,21 +167,28 @@ func restoreState(s *store.BoltStore, sqsEngine *sqs.Engine, snsEngine *sns.Engi
 	return nil
 }
 
-// saveState snapshots SQS and SNS engines and persists them to the store.
-// Note: the two snapshots are not taken atomically — a message published via
-// SNS between the SQS and SNS snapshots may appear in only one of them.
+// saveState snapshots SQS and SNS engines atomically and persists them.
+// Both engine write locks are held during the snapshot to prevent
+// cross-engine inconsistency (e.g. an SNS publish delivering to SQS
+// between the two snapshots).
+// Lock order: SNS then SQS — matches the Publish→SendMessage call flow.
 func saveState(s *store.BoltStore, sqsEngine *sqs.Engine, snsEngine *sns.Engine) error {
-	sqsData, err := sqsEngine.Snapshot()
-	if err != nil {
-		return fmt.Errorf("snapshot SQS: %w", err)
+	snsEngine.Lock()
+	sqsEngine.Lock()
+	sqsData, sqsErr := sqsEngine.SnapshotLocked()
+	snsData, snsErr := snsEngine.SnapshotLocked()
+	sqsEngine.Unlock()
+	snsEngine.Unlock()
+
+	if sqsErr != nil {
+		return fmt.Errorf("snapshot SQS: %w", sqsErr)
 	}
-	if err := s.SaveSQSState(sqsData); err != nil {
-		return fmt.Errorf("save SQS state: %w", err)
+	if snsErr != nil {
+		return fmt.Errorf("snapshot SNS: %w", snsErr)
 	}
 
-	snsData, err := snsEngine.Snapshot()
-	if err != nil {
-		return fmt.Errorf("snapshot SNS: %w", err)
+	if err := s.SaveSQSState(sqsData); err != nil {
+		return fmt.Errorf("save SQS state: %w", err)
 	}
 	if err := s.SaveSNSState(snsData); err != nil {
 		return fmt.Errorf("save SNS state: %w", err)
@@ -189,6 +208,22 @@ func periodicSave(s *store.BoltStore, sqsEngine *sqs.Engine, snsEngine *sns.Engi
 		case <-ticker.C:
 			if err := saveState(s, sqsEngine, snsEngine); err != nil {
 				slog.Warn("periodic state save failed", "error", err)
+			}
+		}
+	}
+}
+
+func periodicRetentionCleanup(sqsEngine *sqs.Engine, interval time.Duration, stop <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if removed := sqsEngine.CleanupExpiredMessages(); removed > 0 {
+				slog.Info("retention cleanup removed expired messages", "count", removed)
 			}
 		}
 	}
