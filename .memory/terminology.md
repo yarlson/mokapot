@@ -47,3 +47,9 @@
 **BoltStore** — wrapper around bbolt in `internal/store/store.go`; provides `SaveSQSState`/`LoadSQSState` and `SaveSNSState`/`LoadSNSState`; JSON-encodes snapshot structs into bbolt buckets
 
 **Snapshot** — point-in-time serializable representation of an engine's state (queues, messages, topics, subscriptions); produced by `Engine.Snapshot()` and consumed by `Engine.Restore()`
+
+**MessageAttribute** — typed key-value metadata attached to an SQS message; has DataType (String, Number, Binary, or custom like String.custom), StringValue, and optional BinaryValue; MD5 digest computed per AWS canonical encoding (sorted by name, big-endian length-prefixed fields, transport type byte)
+
+**GoReleaser** — release automation tool (v2); configured in `.goreleaser.yaml`; builds cross-platform binaries, Docker images, and Homebrew casks from Git tags
+
+**Distroless** — minimal container base image (`gcr.io/distroless/static-debian12:nonroot`); contains no shell or package manager; used for production Docker images

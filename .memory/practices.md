@@ -78,6 +78,15 @@ All via environment variables (optional, with defaults):
 - `sanitizeErrorMessage` strips sentinel prefix before returning to API callers
 - **Batch error pattern**: batch operations (SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch) never fail the entire request for per-entry errors; individual entry failures are collected in `Failed` result array with `SenderFault`, `Code`, `Message` fields; only structural errors (empty batch, >10 entries, duplicate IDs, non-existent queue) return top-level errors
 
+## Releases
+
+- **GoReleaser v2** handles builds, archives, Docker images, and Homebrew cask publishing
+- Tags matching `v*` trigger `.github/workflows/release.yml`
+- Dockerfile expects pre-built binaries (no in-container Go compilation); GoReleaser places them at `$TARGETPLATFORM/mokapot`
+- Required GitHub secrets: `GH_PAT` (repo-scoped PAT for cross-repo Homebrew tap push), `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
+- Docker image: `yarlson/mokapot` (linux/amd64 + linux/arm64)
+- Homebrew cask: `yarlson/homebrew-tap` Casks directory
+
 ## Visual Validation
 
 - Use `scr` skill for CLI/TUI output validation (formatting, colors, tables, progress indicators)

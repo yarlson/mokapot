@@ -27,6 +27,7 @@ A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces
 - Queue CRUD: CreateQueue (idempotent), GetQueueUrl, ListQueues (with optional prefix filter), DeleteQueue
 - Queue attributes: Get/SetQueueAttributes
 - Message lifecycle: SendMessage, ReceiveMessage, DeleteMessage
+- Message attributes: typed key-value metadata (String, Number, Binary) on messages; MD5 digest computed per AWS canonical encoding; attribute filtering on ReceiveMessage (specific names or "All"); persisted through snapshot/restore; survive DLQ moves
 - Batch operations: SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch (with partial failure, duplicate ID detection, batch size validation)
 - Visibility timeout with automatic reappearance
 - ChangeMessageVisibility: extend, shorten, or reset (to 0) the visibility timeout of inflight messages; setting to 0 releases immediately and wakes long pollers
@@ -58,8 +59,10 @@ SQS and SNS are fully operational with complete CRUD, message lifecycle, fanout,
 - `GET /_health` returns `{"status":"ok"}`
 - Graceful shutdown on SIGINT/SIGTERM
 - Structured JSON logging with configurable level
-- Dockerfile (multi-stage, alpine) and docker-compose.yml operational
+- Dockerfile (distroless, GoReleaser-built binaries) and docker-compose.yml operational
+- Release pipeline: GoReleaser v2 via GitHub Actions (`v*` tags); builds linux/darwin amd64+arm64; publishes Docker images (`yarlson/mokapot`) and Homebrew cask (`yarlson/homebrew-tap`)
 - SQS queue CRUD: CreateQueue (idempotent), GetQueueUrl, ListQueues (prefix filter), DeleteQueue, SendMessage, ReceiveMessage, DeleteMessage
+- SQS message attributes: typed key-value metadata on messages; MD5 digest per AWS canonical encoding; attribute filtering on ReceiveMessage; persisted through snapshot/restore
 - Dual protocol support: AWS Query/XML and AWS JSON 1.0 (Go/JS SDK v3)
 - In-memory queue engine with per-queue mutex, visibility timeout, receipt handle tracking
 - Visibility timeout with automatic reappearance: expired inflight messages return to available pool with new receipt handles and incremented ReceiveCount
@@ -84,7 +87,8 @@ SQS and SNS are fully operational with complete CRUD, message lifecycle, fanout,
 - **Testing:** `testify`, `aws-sdk-go-v2` (integration tests)
 - **Linting:** `golangci-lint`
 - **Logging:** `log/slog` with JSON handler
-- **Container:** Alpine-based multi-stage Docker build
-- **Orchestration:** docker-compose
+- **Container:** Distroless (`gcr.io/distroless/static-debian12:nonroot`); GoReleaser builds binaries externally
+- **Release:** GoReleaser v2 + GitHub Actions (`.github/workflows/release.yml`); Homebrew cask + Docker Hub multi-arch
+- **Orchestration:** docker-compose (uses published `yarlson/mokapot:latest` image)
 - **Persistence:** `go.etcd.io/bbolt` (optional)
 - **IDs:** `github.com/google/uuid`

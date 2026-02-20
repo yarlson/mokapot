@@ -42,6 +42,7 @@ Query Parser (internal/query/query.go)
   │     │ — long polling: waiter channels notified on SendMessage; timer-based wakeup for visibility expiry and delayed message availability
   │     │ — delayed messages: per-message or queue-level DelaySeconds; filtered in receiveFromQueue
   │     │ — dead-letter queue: RedrivePolicy on source queue; messages exceeding maxReceiveCount moved to DLQ during receive
+  │     │ — message attributes: typed key-value metadata (String/Number/Binary); MD5 digest per AWS canonical encoding; attribute filtering on ReceiveMessage; attributes survive DLQ moves and snapshot/restore
   │     │ — batch operations: SendMessageBatch/DeleteMessageBatch with partial failure, per-entry error isolation
   │     │ — PurgeQueue: clears all available and inflight messages; 60-second cooldown (PurgeQueueInProgress)
   │     │ — ChangeMessageVisibility: update visibility timeout of inflight message; 0 releases immediately and wakes long pollers
@@ -121,13 +122,12 @@ Query Parser (internal/query/query.go)
 - **Injectable clock** — `Engine.now` field (`func() time.Time`) defaults to `time.Now`; overridable via `SetClock` for deterministic tests without `time.Sleep`
 - **Dual protocol in handler** — Content-Type `application/x-amz-json-1.0` triggers JSON path (Go/JS SDK v3); form-encoded triggers Query/XML path (PHP/older SDKs)
 
-## Docker
+## Docker & Release
 
-- Multi-stage build: `golang:1.25-alpine` → `alpine:3.21`
-- Non-root user (`appuser`)
-- `/data` directory created and owned by `appuser` for persistence
-- Exposes port 4566
-- docker-compose: `PERSISTENCE=bbolt`, `DATA_DIR=/data`, named volume `messaging-data`
+- **Dockerfile**: distroless base (`gcr.io/distroless/static-debian12:nonroot`); expects pre-built binary from GoReleaser at `$TARGETPLATFORM/mokapot`; `/data` directory for persistence; non-root user
+- **docker-compose**: uses published `yarlson/mokapot:latest` image; `PERSISTENCE=bbolt`, `DATA_DIR=/data`, named volume `messaging-data`
+- **GoReleaser v2** (`.goreleaser.yaml`): builds linux/darwin × amd64/arm64; publishes tar.gz archives, Docker images (`yarlson/mokapot`), and Homebrew cask (`yarlson/homebrew-tap`)
+- **GitHub Actions** (`.github/workflows/release.yml`): triggers on `v*` tags; runs GoReleaser; requires secrets `GH_PAT`, `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
 
 ## Defaults
 
