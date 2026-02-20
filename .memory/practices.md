@@ -30,6 +30,9 @@
 - **Node.js integration tests** (`tests/nodejs/`): AWS SDK v3 (`@aws-sdk/client-sqs`, `@aws-sdk/client-sns`) using Node.js native test runner (`node:test`); run with `npm test` from `tests/nodejs/`; requires a running mokapot instance at `http://localhost:4566`
   - SQS coverage: full message lifecycle, visibility timeout reappearance, long polling, delayed messages, batch send/delete with partial failure, dead-letter queue
   - SNS coverage: publish fan-out to SQS (envelope validation), raw vs envelope delivery, filter policy attribute matching
+- **PHP integration tests** (`tests/php/`): PHPUnit 11 + AWS SDK for PHP (`aws/aws-sdk-php`) via Composer; run with `ENDPOINT=http://localhost:4566 vendor/bin/phpunit` from `tests/php/`; requires a running mokapot instance
+  - SQS coverage: full message lifecycle, visibility timeout reappearance, long polling, delayed messages, batch send/delete with partial failure, dead-letter queue
+  - SNS coverage: publish fan-out to SQS (envelope validation), raw vs envelope delivery, filter policy attribute matching
 - Node.js and PHP SDK tests serve as final validation, not primary feedback loop
 - **Deterministic time in tests**: use `Engine.SetClock` to inject a controllable clock; advance time by mutating the closure — never use `time.Sleep` in tests
 
@@ -45,6 +48,7 @@ internal/store/    — BoltStore: bbolt-backed persistence (SaveSQSState/LoadSQS
 internal/runtime/  — schedulers, waiter management (planned)
 internal/types/    — shared structs, canonical encodings (planned)
 tests/nodejs/      — Node.js integration tests (AWS SDK v3) for SQS and SNS
+tests/php/         — PHP integration tests (PHPUnit + AWS SDK for PHP) for SQS and SNS
 ```
 
 ## Configuration

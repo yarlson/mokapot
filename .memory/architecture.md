@@ -97,21 +97,21 @@ Query Parser (internal/query/query.go)
 14 vertical slices defined in `slices/SLICES.md`. Dependency graph:
 
 ```
-1  Service boots ✓
+1  Service boots
 │
-2  Send + receive + delete ✓  ← foundation
-├── 3  Visibility timeout ✓ (reappearance + receipt handle invalidation; no ChangeMessageVisibility action yet)
-│   ├── 4  Long polling ✓
-│   ├── 6  Dead-letter queue ✓
-│   └── 12 Change visibility ✓
-├── 5  Delayed messages ✓
-├── 7  Batch operations ✓ (SendMessageBatch, DeleteMessageBatch)
-├── 8  Purge queue ✓
-├── 9  SNS fanout (envelope) ✓
-│   ├── 10 Raw delivery ✓
-│   └── 11 Filter policies ✓
-├── 13 Persistence (bbolt) ✓
-└── 14 Housekeeping (CRUD lists) ✓
+2  Send + receive + delete  ← foundation
+├── 3  Visibility timeout (reappearance + receipt handle invalidation + ChangeMessageVisibility)
+│   ├── 4  Long polling
+│   ├── 6  Dead-letter queue
+│   └── 12 Change visibility
+├── 5  Delayed messages
+├── 7  Batch operations (SendMessageBatch, DeleteMessageBatch)
+├── 8  Purge queue
+├── 9  SNS fanout (envelope)
+│   ├── 10 Raw delivery
+│   └── 11 Filter policies
+├── 13 Persistence (bbolt)
+└── 14 Housekeeping (CRUD lists)
 ```
 
 ## Key Design Decisions

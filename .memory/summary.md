@@ -2,7 +2,7 @@
 
 ## What
 
-A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces LocalStack for SNS/SQS only. Runs as a single container in docker-compose. Compatible with AWS SDK for JavaScript (Node.js) and AWS SDK for PHP via endpoint override + dummy credentials.
+A lightweight, Go-based local development emulator for AWS SQS and SNS. Replaces LocalStack for SNS/SQS only. Runs as a single container in docker-compose. Compatible with AWS SDK for Go, JavaScript (Node.js), and PHP via endpoint override + dummy credentials.
 
 ## Architecture
 
@@ -79,6 +79,7 @@ SQS and SNS are fully operational with complete CRUD, message lifecycle, fanout,
 - Injectable clock (`Engine.SetClock`) for deterministic time control in tests
 - Integration tests using real AWS SDK Go v2 client against test server
 - Node.js integration tests (`tests/nodejs/`): AWS SDK v3 exercising SQS (lifecycle, visibility, long polling, delays, batches, DLQ) and SNS (fan-out, raw delivery, filter policies) against a running mokapot instance
+- PHP integration tests (`tests/php/`): PHPUnit + AWS SDK for PHP exercising SQS (lifecycle, visibility, long polling, delays, batches, DLQ) and SNS (fan-out, raw delivery, filter policies) against a running mokapot instance
 - Optional bbolt persistence: `PERSISTENCE=bbolt` + `DATA_DIR` enables state snapshots to `state.db`; periodic save (30s) + graceful-shutdown save; full restore on startup (queues, topics, subscriptions, messages)
 - Atomic cross-engine snapshots: `saveState` holds both SNS and SQS write locks simultaneously via `Lock`/`SnapshotLocked`/`Unlock` to prevent cross-engine inconsistency
 - Periodic retention cleanup goroutine (5-minute interval) removes expired messages from all queues
@@ -91,7 +92,7 @@ SQS and SNS are fully operational with complete CRUD, message lifecycle, fanout,
 
 - **Language:** Go 1.25
 - **Module:** `github.com/yarlson/mokapot`
-- **Testing:** `testify`, `aws-sdk-go-v2` (Go integration tests), Node.js native test runner + AWS SDK v3 (JS integration tests in `tests/nodejs/`)
+- **Testing:** `testify`, `aws-sdk-go-v2` (Go integration tests), Node.js native test runner + AWS SDK v3 (JS integration tests in `tests/nodejs/`), PHPUnit + AWS SDK for PHP (PHP integration tests in `tests/php/`)
 - **Linting:** `golangci-lint`
 - **Logging:** `log/slog` with JSON handler
 - **Container:** Distroless (`gcr.io/distroless/static-debian12:nonroot`); GoReleaser builds binaries externally
